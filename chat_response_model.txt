@@ -1,0 +1,144 @@
+### **Using `training_data.csv` to Train & Improve the Model**
+Now that you have a **`training_data.csv`**, the next step is to **train a Deep Q-Learning (DQL) model** using TensorFlow/Keras. This will allow the car to **learn from past experiences** and improve over time.
+
+---
+
+## **1️⃣ Understanding How to Use `training_data.csv`**
+Your dataset contains:
+- **State (LIDAR distances)** → What the car "sees"
+- **Action (steering, acceleration, brake)** → What the car "did"
+- **Reward** → How good/bad that action was
+- **Next State (LIDAR distances after action)** → What the car "sees" next
+
+These are the key components of **Reinforcement Learning (RL)**.
+
+---
+
+## **2️⃣ Setting Up the Deep Q-Learning Model**
+We will:
+1. **Load the dataset** (`training_data.csv`)
+2. **Train a neural network** to predict better actions
+3. **Use the trained model to generate better training data**
+4. **Improve the model over multiple iterations**
+
+---
+
+### **✅ Step 1: Load the Data**
+Create a new Python file (`train_dql.py`) and add the following:
+```python
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
+
+# Load the dataset
+df = pd.read_csv("training_data.csv")
+
+# Convert from lists stored as strings to NumPy arrays
+df["State"] = df["State"].apply(lambda x: np.array(eval(x)))  # LIDAR distances
+df["Action"] = df["Action"].apply(lambda x: np.array(eval(x)))  # Steering, Accel, Brake
+df["Next State"] = df["Next State"].apply(lambda x: np.array(eval(x)))  # Next LIDAR distances
+
+# Extract features and labels
+X = np.array(df["State"].tolist())  # Input (LIDAR distances)
+y = np.array(df["Action"].tolist())  # Target (actions taken)
+
+# Split into training & validation sets
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+```
+---
+
+### **✅ Step 2: Define the DQL Neural Network**
+This network will **predict the best action** based on LIDAR input.
+```python
+# Define the model
+model = Sequential([
+    Dense(64, activation="relu", input_shape=(len(X_train[0]),)),  # LIDAR input
+    Dense(64, activation="relu"),
+    Dense(3, activation="linear")  # Outputs: Steering, Acceleration, Brake
+])
+
+# Compile the model
+model.compile(loss="mse", optimizer=Adam(learning_rate=0.001))
+
+# Print model summary
+model.summary()
+```
+---
+
+### **✅ Step 3: Train the Model**
+Now, train the neural network using the collected data.
+```python
+# Train the model
+model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=50, batch_size=32)
+
+# Save the trained model
+model.save("car_dql_model.h5")
+print("Training complete. Model saved as 'car_dql_model.h5'")
+```
+---
+
+## **3️⃣ Using the Trained Model for a Smarter Car**
+Now that we have a trained model, let's modify **`simulation_test.py`** to use it instead of random actions.
+
+---
+
+### **✅ Modify `simulation_test.py` to Use the Trained Model**
+Replace the **random action selection** with **model-based predictions**.
+
+#### **Import the Model at the Top**
+```python
+from tensorflow.keras.models import load_model
+```
+
+#### **Load the Model Before Running the Simulation**
+```python
+model = load_model("car_dql_model.h5")
+print("Loaded trained DQL model.")
+```
+
+#### **Replace Action Selection in the Loop**
+Instead of using a rule-based system:
+```python
+# Convert LIDAR distances to a NumPy array
+state = np.array(distances).reshape(1, -1)
+
+# Predict action from the trained model
+predicted_action = model.predict(state, verbose=0)[0]
+
+# Clip values to ensure valid actions
+predicted_action = np.clip(predicted_action, [-1.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+
+action = predicted_action  # Use the model's predicted action
+```
+---
+
+## **4️⃣ What Happens to `training_data.csv`?**
+By default, every time you **run `simulation_test.py` again**, it **overwrites** the CSV file.
+
+### **🔹 Option 1: Keep Improving Data (Append Mode)**
+If you want **continuous improvement**, modify the save function to **append** instead of overwrite:
+```python
+df.to_csv("training_data.csv", mode="a", header=False, index=False)
+```
+This will **add new experiences** instead of replacing old data.
+
+### **🔹 Option 2: Start Fresh Each Time**
+If you want a **fresh dataset each run**, let it overwrite:
+```python
+df.to_csv("training_data.csv", index=False)
+```
+
+---
+
+## **5️⃣ Summary**
+1. **Train a DQL model** using `training_data.csv`.
+2. **Use the trained model** instead of random actions.
+3. **Decide whether to append or overwrite** training data for continuous learning.
+
+---
+
+🚀 **Try training and using the model! Let me know if anything breaks!** 🚗💨
