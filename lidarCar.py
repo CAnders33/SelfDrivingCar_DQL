@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-
 class carSim(gym.Wrapper):
     def __init__(self, seed=None, show_lidar=True):
         env = gym.make("CarRacing-v3", render_mode="human")
