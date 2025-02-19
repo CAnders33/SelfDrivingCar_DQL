@@ -4,9 +4,25 @@ This is my machine learning final project I created with Sergio and Aiden
 
 We used the gymnasium library and a DQL to train the car to navigate the track
 
+## Requirements
+
+- Python 3.11.9
+- Microsoft Visual C++ 14.0 or greater (Install from [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/))
+- SWIG
+
 ## Setup Instructions
 
-1. First, install SWIG:
+1. Install Microsoft Visual C++ Build Tools:
+   - Download from https://visualstudio.microsoft.com/visual-cpp-build-tools/
+   - Run the installer
+   - Select "Desktop development with C++" workload
+   - In the right panel under "Installation details", ensure these are selected:
+     * MSVC C++ x64/x86 build tools
+     * Windows 10/11 SDK
+     * C++ CMake tools for Windows
+   - Click Install
+
+2. Install SWIG:
    - Download SWIG from http://www.swig.org/download.html
    - Add SWIG to your system PATH
 
@@ -19,7 +35,6 @@ We used the gymnasium library and a DQL to train the car to navigate the track
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
-   pip install "gymnasium[box2d]"
    ```
 
 4. Configure VSCode:
