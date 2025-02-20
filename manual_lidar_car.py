@@ -168,11 +168,33 @@ if __name__ == "__main__":
         # Step environment
         observation, reward, terminated, truncated, info = env.step(action)
         
-        # Print lidar readings every 3 frames
+
+
+        
+        # Get lidar readings and road status every 3 frames
         if frame_count % 3 == 0:
             lidar_readings = env.get_lidar_readings(observation)
-            print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3}".format(
-                lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90]
+            
+            # Get road status
+            car_env = env.unwrapped
+            car = car_env.car
+
+            # Check each wheel's tiles set
+            wheel0_tiles = car.wheels[0].tiles
+            wheel1_tiles = car.wheels[1].tiles
+            wheel2_tiles = car.wheels[2].tiles
+            wheel3_tiles = car.wheels[3].tiles
+
+            # Complex two wheels on road
+            left_side_on_road = (len(wheel0_tiles) > 0 and len(wheel2_tiles) > 0)
+            right_side_on_road = (len(wheel1_tiles) > 0 and len(wheel3_tiles) > 0)
+
+            on_road = left_side_on_road or right_side_on_road
+            
+            # Print both lidar and road status
+            print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
+                lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
+                "On Road" if on_road else "Off Road"
             ), end='')
         frame_count += 1
 
