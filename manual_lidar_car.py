@@ -194,8 +194,12 @@ if __name__ == "__main__":
             # Print both lidar and road status
             print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
                 lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
-                "On Road" if on_road else "Off Road"
+                "On Road" if on_road else "Off Road" 
             ), end='')
+
+            if not on_road:
+                terminated = True
+                
         frame_count += 1
 
         if terminated or truncated:
