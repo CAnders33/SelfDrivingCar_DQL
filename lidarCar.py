@@ -16,11 +16,10 @@ class RewardConfig:
         self.living_cost = -0.03             # Penalty per step to discourage inaction
 
 class carSim(gym.Wrapper):
-    def __init__(self, seed=None, show_lidar=True, reward_config=None):
+    def __init__(self, seed=None, reward_config=None):
         env = gym.make("CarRacing-v3", render_mode="human")
         super().__init__(env)
         
-        self.show_lidar = show_lidar
         self.reward_config = RewardConfig()
         self.last_position = None
         
@@ -59,17 +58,13 @@ class carSim(gym.Wrapper):
         on_road = left_side_on_road or right_side_on_road
 
         # Calculate rewards
-
-        # average speed reward
         speed = np.linalg.norm(car.hull.linearVelocity)  # Speed in m/s
         speed_reward = speed * self.reward_config.speed_reward_weight
 
         # Distance covered reward
         if self.last_position is not None:
-            # Extract x,y coordinates from Box2D vectors
             curr_pos = np.array([current_position.x, current_position.y])
             last_pos = np.array([self.last_position.x, self.last_position.y])
-            # Calculate Euclidean distance
             distance = np.linalg.norm(curr_pos - last_pos)
             distance_reward = distance * self.reward_config.distance_reward_weight
         else:
@@ -88,76 +83,57 @@ class carSim(gym.Wrapper):
     def get_lidar_readings(self, frame):
         """
         Simulated LiDAR using image processing to detect track edges.
-        Returns distances for five beams:
-        - Straight left (90°)
-        - 45° left of forward (45°)
-        - Straight ahead (0°)
-        - 45° right of forward (-45°)
-        - Straight right (-90°)
+        Returns distances for five beams from three positions.
         """
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.6), int(w * 0.5)  # Approximate car position
+        car_y, car_x = int(h * 0.6), int(w * 0.5)  # Car center position
         
-        # Ordered from left to right
+        # Define sensor positions at the wheels bc it thinks it is off the trackwith two whlls still on
+        sensor_positions = [
+            # Left front wheel
+            (car_x - 15, car_y - 10),
+            # Right front wheel
+            (car_x + 15, car_y - 10),
+            # Left rear wheel
+            (car_x - 15, car_y + 5),
+            # Right rear wheel
+            (car_x + 15, car_y + 5)
+        ]
+        
         directions = [90, 45, 0, -45, -90]  # Degrees relative to car
         distances = {}
 
         for angle in directions:
-            distances[angle] = self.cast_ray(frame, car_x, car_y, angle)
+            max_distance = 0
+            for sx, sy in sensor_positions:
+                distance = self.cast_ray(frame, sx, sy, angle)
+                max_distance = max(max_distance, distance)
+            distances[angle] = max_distance
 
         return distances
 
     def cast_ray(self, frame, start_x, start_y, angle, max_distance=200):
-        """
-        Cast a ray from the car in the given direction and return the distance to the track edge.
-        """
+        """Cast a ray and return distance to track edge."""
         angle_rad = np.radians(angle)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
 
-        for d in range(1, max_distance):  # Max check distance in pixels
+        for d in range(1, max_distance):
             x = int(start_x + d * cos_a)
-            y = int(start_y - d * sin_a)  # Invert y since images are top-down
+            y = int(start_y - d * sin_a)
 
             if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]: 
                 pixel = frame[y, x]
-                if not self.is_road(pixel):  # Found track edge
+                if not self.is_road(pixel):
                     return d
-        return max_distance  # Default if no edge found
+        return max_distance
 
     def is_road(self, pixel):
-        """
-        Check if a pixel is part of the road based on RGB values
-        """
-        # Dark/grey color detection with higher tolerance
-        return (70 < pixel.mean() < 140 and  # Average intensity
-                            np.std(pixel) < 15)  # Low variance in color
+        """Check if a pixel is part of the road"""
+        return (70 < pixel.mean() < 140 and  # Grey range
+                np.std(pixel) < 15)          # Low variance in color
 
     def render(self):
-        # Get the base frame from the environment
-        frame = self.env.render()
-        
-        if self.show_lidar and hasattr(self, 'current_obs'):
-            # Use the stored observation for LiDAR calculations
-            distances = self.get_lidar_readings(self.current_obs)
-
-            # Draw LiDAR rays
-            x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.6)  # Car position
-            for angle, dist in distances.items():
-                angle_rad = np.radians(angle)
-                x2, y2 = int(x1 + dist * np.cos(angle_rad)), int(y1 - dist * np.sin(angle_rad))
-                # Draw bright red rays for better visibility
-                cv2.line(frame, (x1, y1), (x2, y2), (255, 50, 50), 2)
-
-            # Draw car position indicator
-            cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1)
-
-        return frame
-
-
-    def toggle_lidar(self):
-        """ Toggle the LiDAR visualization on/off """
-        self.show_lidar = not self.show_lidar
-        return self.show_lidar
+        return self.env.render()
 
     def close(self):
         self.env.close()
@@ -318,7 +294,7 @@ if __name__ == "__main__":
     reward_config = RewardConfig()
 
     SEED = 37843
-    env = carSim(seed=SEED, show_lidar=True, reward_config=reward_config)
+    env = carSim(seed=SEED, reward_config=reward_config)
     observation, info = env.reset()
 
     # Get input dimensions from LiDAR readings (5 distances)
