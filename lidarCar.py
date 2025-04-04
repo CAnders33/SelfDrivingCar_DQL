@@ -2,6 +2,7 @@ import gymnasium as gym
 import numpy as np
 import random
 import os
+import time
 import cv2
 import torch
 import torch.nn as nn
@@ -16,12 +17,13 @@ class RewardConfig:
         self.living_cost = -0.03             # Penalty per step to discourage inaction
 
 class carSim(gym.Wrapper):
-    def __init__(self, seed=None, reward_config=None):
+    def __init__(self, seed=None, reward_config=None, show_rays=False):
         env = gym.make("CarRacing-v3", render_mode="human")
         super().__init__(env)
         
         self.reward_config = RewardConfig()
         self.last_position = None
+        self.show_rays = show_rays  # Toggle for ray visualization
         
         if seed is not None:
             self.seed_value = seed
@@ -86,33 +88,22 @@ class carSim(gym.Wrapper):
         Returns distances for five beams from three positions.
         """
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.6), int(w * 0.5)  # Car center position
+        car_y, car_x = int(h * 0.7), int(w * 0.5)  # Car center position
         
         # Define sensor positions at the wheels bc it thinks it is off the trackwith two whlls still on
-        sensor_positions = [
-            # Left front wheel
-            (car_x - 15, car_y - 10),
-            # Right front wheel
-            (car_x + 15, car_y - 10),
-            # Left rear wheel
-            (car_x - 15, car_y + 5),
-            # Right rear wheel
-            (car_x + 15, car_y + 5)
-        ]
-        
         directions = [90, 45, 0, -45, -90]  # Degrees relative to car
         distances = {}
 
         for angle in directions:
-            max_distance = 0
-            for sx, sy in sensor_positions:
-                distance = self.cast_ray(frame, sx, sy, angle)
-                max_distance = max(max_distance, distance)
-            distances[angle] = max_distance
+            if self.show_rays:
+                distance = self.show_cast_ray(frame, car_x, car_y, angle)
+            else:
+                distance = self.cast_ray(frame, car_x, car_y, angle)
+            distances[angle] = distance
 
         return distances
 
-    def cast_ray(self, frame, start_x, start_y, angle, max_distance=200):
+    def cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
         """Cast a ray and return distance to track edge."""
         angle_rad = np.radians(angle)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
@@ -123,14 +114,48 @@ class carSim(gym.Wrapper):
 
             if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]: 
                 pixel = frame[y, x]
+                if not self.is_road(pixel):                    
+                    return d
+        return max_distance
+    
+    def show_cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
+        angle_rad = np.radians(angle)
+        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+        frame_copy = frame.copy()  # Create a copy for visualization
+
+        # Draw a small circle at the sensor position
+        cv2.circle(frame_copy, (start_x, start_y), 2, (0, 255, 0), -1)  # Green dot
+
+        for d in range(1, max_distance):
+            x = int(start_x + d * cos_a)
+            y = int(start_y - d * sin_a)
+
+            if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
+                pixel = frame[y, x]
                 if not self.is_road(pixel):
+                    # Draw the ray line from start to hit point
+                    cv2.line(frame_copy, (start_x, start_y), (x, y), (255, 255, 0), 1)
+                    cv2.circle(frame_copy, (x, y), 3, (0, 0, 255), -1)  # Red dot
+                    cv2.imshow("Ray Hits", frame_copy)
+                    cv2.waitKey(1)
                     return d
         return max_distance
 
     def is_road(self, pixel):
-        """Check if a pixel is part of the road"""
-        return (70 < pixel.mean() < 140 and  # Grey range
-                np.std(pixel) < 15)          # Low variance in color
+        """
+        Check if a pixel is part of the road based on RGB values
+        """
+        # Dark/grey color detection with higher tolerance
+        return (60 < np.mean(pixel) < 150 and  # Average intensity
+                np.std(pixel) < 35 and  # Color similarity
+                pixel[1] < 150)  # Not too green
+
+    # def is_road(self, pixel):
+    #     hsv = cv2.cvtColor(np.uint8([[pixel]]), cv2.COLOR_RGB2HSV)[0][0]
+    #     h, s, v = hsv
+
+    #     # Road is gray: low saturation, medium value
+    #     return s < 40 and v < 180
 
     def render(self):
         return self.env.render()
@@ -239,6 +264,9 @@ class DQL:
                 state_vector = np.array(list(lidar_readings.values()))
                 
                 action = self.select_action(state_vector)
+                lidar_str = ", ".join(f"{int(x):3d}" for x in list(lidar_readings.values()))
+                print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
+                
                 # Convert discrete action to continuous space
                 continuous_action = self._discrete_to_continuous(action)
                 next_obs, reward, done, truncated, _ = self.env.step(continuous_action)
@@ -262,11 +290,11 @@ class DQL:
 
     def save_model(self, filename):
         os.makedirs('nets', exist_ok=True)  # Create nets directory if it doesn't exist
-        # print("\nSaving model weights sample:")
-        # for name, param in self.q_network.named_parameters():
-        #     if 'weight' in name:
-        #         print(f"{name} first 5 values: {param.data[:5]}")
-        #         break
+        print("\nSaving model weights sample:")  # chaeck this and output when loaded to see if it is the same
+        for name, param in self.q_network.named_parameters():
+            if 'weight' in name:
+                print(f"{name} first 5 values: {param.data[:5]}")
+                break
         
         torch.save(self.q_network.state_dict(), f'nets/{filename}.pth')
         print(f"Model saved to nets/{filename}.pth")
@@ -293,8 +321,8 @@ if __name__ == "__main__":
     # change rewards in class above
     reward_config = RewardConfig()
 
-    SEED = 37843
-    env = carSim(seed=SEED, reward_config=reward_config)
+    SEED = np.random.randint(100) # 37843
+    env = carSim(seed=SEED, reward_config=reward_config, show_rays=False) # cchange to True to see rays
     observation, info = env.reset()
 
     # Get input dimensions from LiDAR readings (5 distances)
