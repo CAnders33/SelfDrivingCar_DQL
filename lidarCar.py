@@ -10,10 +10,10 @@ import torch.optim as optim
 
 class RewardConfig:
     def __init__(self):
-        self.off_track_penalty = -150       # Penalty for going off track
+        self.off_track_penalty = -110        # Penalty for going off track - overfits if too low. Can go fast and crash
         self.speed_reward_weight = 0.02      # Weight for speed reward
-        self.distance_reward_weight = 1   # Weight for distance covered
-        self.living_cost = -0.1             # Penalty per step to discourage inaction
+        self.distance_reward_weight = 2    # Weight for distance covered
+        self.living_cost = -0.03             # Penalty per step to discourage inaction
 
 class carSim(gym.Wrapper):
     def __init__(self, seed=None, show_lidar=True, reward_config=None):
@@ -107,7 +107,7 @@ class carSim(gym.Wrapper):
 
         return distances
 
-    def cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
+    def cast_ray(self, frame, start_x, start_y, angle, max_distance=200):
         """
         Cast a ray from the car in the given direction and return the distance to the track edge.
         """
@@ -129,9 +129,8 @@ class carSim(gym.Wrapper):
         Check if a pixel is part of the road based on RGB values
         """
         # Dark/grey color detection with higher tolerance
-        return (70 < np.mean(pixel) < 140 and  # Average intensity
-                np.std(pixel) < 30 and  # Color similarity
-                pixel[1] < 150)  # Not too green
+        return (70 < pixel.mean() < 140 and  # Average intensity
+                            np.std(pixel) < 15)  # Low variance in color
 
     def render(self):
         # Get the base frame from the environment
@@ -287,11 +286,11 @@ class DQL:
 
     def save_model(self, filename):
         os.makedirs('nets', exist_ok=True)  # Create nets directory if it doesn't exist
-        print("\nSaving model weights sample:")
-        for name, param in self.q_network.named_parameters():
-            if 'weight' in name:
-                print(f"{name} first 5 values: {param.data[:5]}")
-                break
+        # print("\nSaving model weights sample:")
+        # for name, param in self.q_network.named_parameters():
+        #     if 'weight' in name:
+        #         print(f"{name} first 5 values: {param.data[:5]}")
+        #         break
         
         torch.save(self.q_network.state_dict(), f'nets/{filename}.pth')
         print(f"Model saved to nets/{filename}.pth")
@@ -326,31 +325,55 @@ if __name__ == "__main__":
     state_dim = 5  # One value for each LiDAR beam
     action_dim = len(DQL.actions)  # Number of discrete actions
 
-    # Initialize DQL agent and try to load existing model
+    # Initialize DQL agent
     agent = DQL(state_dim, action_dim, env)
-    model_path = 'nets/car_dql_model.pth'
-    if os.path.exists(model_path):
-        print(f"\nFound existing model at {model_path}")
-        try:
-            agent.load_model("car_dql_model")
-            print("Successfully loaded existing model")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Starting with fresh model")
+
+    # List available models and let user choose
+    if os.path.exists('nets'):
+        model_files = [f for f in os.listdir('nets') if f.endswith('.pth')]
+        if model_files:
+            print("\nAvailable models:")
+            for i, model_file in enumerate(model_files):
+                print(f"{i+1}. {model_file}")
+            
+            choice = input("\nEnter model number to load (or press Enter for new model): ")
+            if choice.strip() and choice.isdigit() and 1 <= int(choice) <= len(model_files):
+                model_name = model_files[int(choice)-1].replace('.pth', '')
+                try:
+                    agent.load_model(model_name)
+                    print(f"Successfully loaded model: {model_name}")
+                except Exception as e:
+                    print(f"Error loading model: {e}")
+                    print("Starting with fresh model")
+            else:
+                print("Starting with fresh model")
+        else:
+            print("\nNo models directory found. Starting with fresh model")
+    else:
+        print("\nNo models directory found. Starting with fresh model")
 
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        agent.train_agent(episodes=400)  # Number of episodes to train
+        for i in range(3):
+            agent.train_agent(episodes=200)  # Number of episodes to train
+        
+        # Get filename for saving model
+        save_name = input("\nEnter filename to save model (without .pth, or press Enter for 'car_dql_model'): ")
+        if not save_name.strip():
+            save_name = "car_dql_model"
         
         # Save the trained model
-        agent.save_model("car_dql_model")
+        agent.save_model(save_name)
         print("Model saved successfully")
 
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
         # Save model on interruption
-        agent.save_model("car_dql_model_interrupted")
+        save_name = input("\nEnter filename to save interrupted model (without .pth, or press Enter for 'car_dql_model_interrupted'): ")
+        if not save_name.strip():
+            save_name = "car_dql_model_interrupted"
+        agent.save_model(save_name)
         print("Model saved")
 
     finally:
