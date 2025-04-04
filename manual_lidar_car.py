@@ -133,7 +133,7 @@ def get_keyboard_action():
 if __name__ == "__main__":
     import pygame
     
-    SEED = 37843
+    SEED = np.random.randint(1, 90000) # 37843
     env = ManualCarSim(seed=SEED, show_lidar=True)  # Start with LiDAR visualization enabled
     observation, info = env.reset()
 
@@ -168,9 +168,6 @@ if __name__ == "__main__":
         # Step environment
         observation, reward, terminated, truncated, info = env.step(action)
         
-
-
-        
         # Get lidar readings and road status every 3 frames
         if frame_count % 3 == 0:
             lidar_readings = env.get_lidar_readings(observation)
@@ -199,7 +196,7 @@ if __name__ == "__main__":
 
             if not on_road:
                 terminated = True
-                
+
         frame_count += 1
 
         if terminated or truncated:
