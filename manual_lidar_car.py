@@ -1,7 +1,36 @@
-import gymnasium as gym
+
 import numpy as np
 import cv2
 import pygame
+import os
+import sys
+import gymnasium as gym
+from gymnasium.envs.box2d.car_racing import SCALE, ZOOM
+
+
+# Force the script to use the car_racing.py of the evironment
+# sys.path.insert(0, '/Users/sergio/Desktop/Notes/CSCI_4622_(ML)/RL_SelfDrivingCar/FinalProjectvenv/lib/python3.12/site-packages')
+# Get the directory of the current file
+# current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# # Construct the relative path to the site-packages directory
+# site_packages_path = os.path.join(current_dir, 'lidarCarDQLvenv', 'lib', 'python3.12', 'site-packages')
+
+# # Insert the relative path to sys.path
+# sys.path.insert(0, site_packages_path)
+
+# # Print the path of the car_racing module
+# import gymnasium.envs.box2d.car_racing # import SCALE, ZOOM
+# from gymnasium.envs.box2d.car_racing import SCALE, ZOOM
+# print("car_racing.py path:", os.path.abspath(gymnasium.envs.box2d.car_racing.__file__))
+
+
+
+
+# the render mode is used to display an image so you can see what is happening, otherwise the simulation will run in the background
+# domain_randomize: Changes the physics and appearance of the track randomly
+# env = gym.make("CarRacing-v3", render_mode="human", domain_randomize=False)  
+
 
 class ManualCarSim(gym.Wrapper):
     def __init__(self, seed=None, show_lidar=True):
@@ -15,6 +44,60 @@ class ManualCarSim(gym.Wrapper):
             self.action_space.seed(seed)
             self.observation_space.seed(seed)
             np.random.seed(seed)
+    
+
+    
+    def world_to_coord(self, x_world, y_world, coord_system='window'):
+        '''
+        This function transforms a point of the map to screen coordinates.
+
+        Inputs: 
+            - x_world: The X-coordinate of the point in the world (track) coordinate system.
+            - y_world:  The Y-coordinate of the point in the world (track) coordinate system.
+
+        Output:
+            - Coordinates of the location in the screen.
+
+        Some extra values used:
+            - zoom: The scaling factor applied to convert world coordinates to screen coordinates.
+            - translation: The (x, y) offset applied to position objects correctly on the screen based on the camera view.
+            - angle: The rotation angle (in radians) of the world relative to the screen, ensuring correct alignment.
+        '''
+
+        if (coord_system != 'window' and coord_system != 'state'):
+            print('Wrong coordinate system. Only options: window or state')
+            sys.exit
+
+        C_SYSTEM_W = 1000
+        C_SYSTEM_H = 800
+
+        if (coord_system == 'state'):
+            C_SYSTEM_W = 96
+            C_SYSTEM_H = 96
+        
+        car_env = env.unwrapped
+        current_time = car_env.t
+        car = car_env.car
+
+        zoom = 0.1 * SCALE * max(1 - current_time, 0) + ZOOM * SCALE * min(current_time, 1)
+        scroll_x = -(car.hull.position[0]) * zoom
+        scroll_y = -(car.hull.position[1]) * zoom
+        angle = -car.hull.angle
+        translation = pygame.math.Vector2((scroll_x, scroll_y)).rotate_rad(angle)
+        translation = (C_SYSTEM_W / 2 + translation[0], C_SYSTEM_H / 4 + translation[1])
+        
+
+        # Rotate around (0,0) by 'angle'
+        point = pygame.math.Vector2(x_world, y_world)
+        point = point.rotate_rad(angle)  # rotates by 'angle' in radians
+
+        # Scale by 'zoom' and then apply translation
+        point = (point[0] * zoom + translation[0], point[1] * zoom + translation[1])
+
+        return point
+
+
+
 
     def reset(self, **kwargs):
         if hasattr(self, 'seed_value'):
@@ -38,8 +121,15 @@ class ManualCarSim(gym.Wrapper):
         - 45° right of forward (-45°)
         - Straight right (-90°)
         """
-        h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.6), int(w * 0.5)  # Approximate car position
+        # h, w, _ = frame.shape
+        # car_y, car_x = int(h * 0.65), int(w * 0.5)  # Approximate car position
+
+        car_env = env.unwrapped
+        car = car_env.car
+        car_x, car_y = car.hull.position
+        car_x, car_y = self.world_to_coord(car_x, car_y, coord_system='state')
+        print('car_x and car_y: ', car_x, car_y)
+        # car_y += 50
         
         # Ordered from left to right
         directions = [90, 45, 0, -45, -90]  # Degrees relative to car
@@ -50,7 +140,7 @@ class ManualCarSim(gym.Wrapper):
 
         return distances
 
-    def cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
+    def cast_ray(self, frame, start_x, start_y, angle, max_distance=20):
         """
         Cast a ray from the car in the given direction and return the distance to the track edge.
         """
@@ -60,7 +150,6 @@ class ManualCarSim(gym.Wrapper):
         for d in range(1, max_distance):  # Max check distance in pixels
             x = int(start_x + d * cos_a)
             y = int(start_y - d * sin_a)  # Invert y since images are top-down
-
             if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]: 
                 pixel = frame[y, x]
                 if not self.is_road(pixel):  # Found track edge
@@ -75,6 +164,32 @@ class ManualCarSim(gym.Wrapper):
         return (70 < np.mean(pixel) < 140 and  # Average intensity
                 np.std(pixel) < 30 and  # Color similarity
                 pixel[1] < 150)  # Not too green
+
+    
+    def is_road2(self, pixel):
+        """
+        Check if a pixel is part of the road OR is red (the car) based on RGB values
+        """
+        # --- Example if pixel is in RGB order: (R, G, B) ---
+        r, g, b = pixel  # If your array is actually BGR (like OpenCV), swap the indexing
+
+        # Original logic for dark/grey detection:
+        is_grey_road = (
+            (70 < np.mean(pixel) < 140) and  # average intensity
+            (np.std(pixel) < 30) and         # color similarity (not colorful)
+            (g < 150)                        # not too green
+        )
+
+        # New logic: treat "red enough" as road too
+        # Tweak the thresholds as needed
+        is_red_car = (
+            (r > 150)  and  # strong red channel
+            (g < 100)  and  # not much green
+            (b < 100)       # not much blue
+        )
+
+        return is_grey_road or is_red_car
+
 
     def render(self):
         # Get the base frame from the environment
@@ -189,7 +304,7 @@ if __name__ == "__main__":
             on_road = left_side_on_road or right_side_on_road
             
             # Print both lidar and road status
-            print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
+            print("\rLiDAR Distances: Forward 90°: {:<3} | Left 135°: {:<3} | Left 180°: {:<3} | Right 45°: {:<3} | Right 0°: {:<3} | {}".format(
                 lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
                 "On Road" if on_road else "Off Road" 
             ), end='')

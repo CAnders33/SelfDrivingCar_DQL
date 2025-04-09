@@ -322,7 +322,7 @@ if __name__ == "__main__":
     reward_config = RewardConfig()
 
     SEED = np.random.randint(100) # 37843
-    env = carSim(seed=SEED, reward_config=reward_config, show_rays=False) # cchange to True to see rays
+    env = carSim(seed=SEED, reward_config=reward_config, show_rays=True) # cchange to True to see rays
     observation, info = env.reset()
 
     # Get input dimensions from LiDAR readings (5 distances)
