@@ -18,7 +18,7 @@ class RewardConfig:
 
 class carSim(gym.Wrapper):
     def __init__(self, seed=None, reward_config=None, show_rays=False):
-        env = gym.make("CarRacing-v3", render_mode="human")
+        env = gym.make("CarRacing-v3", render_mode="rgb_array")
         super().__init__(env)
         
         self.reward_config = RewardConfig()
@@ -82,11 +82,13 @@ class carSim(gym.Wrapper):
         self.last_position = current_position
         return obs, reward, done, truncated, info
 
-    def get_lidar_readings(self, frame):
+    def get_lidar_readings(self):
         """
         Simulated LiDAR using image processing to detect track edges.
         Returns distances for five beams from three positions.
         """
+        frame = self.render()
+
         h, w, _ = frame.shape
         car_y, car_x = int(h * 0.7), int(w * 0.5)  # Car center position
         
@@ -96,10 +98,9 @@ class carSim(gym.Wrapper):
 
         for angle in directions:
             if self.show_rays:
-                distance = self.show_cast_ray(frame, car_x, car_y, angle)
+                distances[angle] = self.show_cast_ray(frame, car_x, car_y, angle)
             else:
-                distance = self.cast_ray(frame, car_x, car_y, angle)
-            distances[angle] = distance
+                distances[angle] = self.cast_ray(frame, car_x, car_y, angle)
 
         return distances
 
@@ -134,10 +135,6 @@ class carSim(gym.Wrapper):
                 pixel = frame[y, x]
                 if not self.is_road(pixel):
                     # Draw the ray line from start to hit point
-                    cv2.line(frame_copy, (start_x, start_y), (x, y), (255, 255, 0), 1)
-                    cv2.circle(frame_copy, (x, y), 3, (0, 0, 255), -1)  # Red dot
-                    cv2.imshow("Ray Hits", frame_copy)
-                    cv2.waitKey(1)
                     return d
         return max_distance
 
@@ -158,7 +155,35 @@ class carSim(gym.Wrapper):
     #     return s < 40 and v < 180
 
     def render(self):
-        return self.env.render()
+        frame = self.env.render()
+
+        # Optionally overlay LiDAR rays or car dot here
+        if self.show_rays:
+            frame = self.overlay_lidar(frame)
+
+        # Show it in a window
+        cv2.imshow("CarRacing + LiDAR", frame)
+        cv2.waitKey(1)
+
+        return frame
+    
+    def overlay_lidar(self, frame):
+        h, w, _ = frame.shape
+        car_y, car_x = int(h * 0.7), int(w * 0.5)
+        directions = [90, 45, 0, -45, -90]
+
+        for angle in directions:
+            dist = self.cast_ray(frame, car_x, car_y, angle)
+            angle_rad = np.radians(angle)
+            end_x = int(car_x + dist * np.cos(angle_rad))
+            end_y = int(car_y - dist * np.sin(angle_rad))
+
+            cv2.line(frame, (car_x, car_y), (end_x, end_y), (0, 0, 255), 2)
+            cv2.circle(frame, (end_x, end_y), 3, (255, 0, 0), -1)
+
+        return frame
+
+
 
     def close(self):
         self.env.close()
@@ -260,7 +285,7 @@ class DQL:
             while not (done or truncated):
                 self.steps += 1
                 # Convert observation to state vector (LiDAR distances)
-                lidar_readings = self.env.get_lidar_readings(state)
+                lidar_readings = self.env.get_lidar_readings()
                 state_vector = np.array(list(lidar_readings.values()))
                 
                 action = self.select_action(state_vector)
@@ -270,7 +295,8 @@ class DQL:
                 # Convert discrete action to continuous space
                 continuous_action = self._discrete_to_continuous(action)
                 next_obs, reward, done, truncated, _ = self.env.step(continuous_action)
-                next_state_vector = np.array(list(self.env.get_lidar_readings(next_obs).values()))
+                next_lidar_readings = self.env.get_lidar_readings()
+                next_state_vector = np.array(list(next_lidar_readings.values()))
                 
                 self.store_experience(state_vector, action, reward, next_state_vector, done or truncated)
                 self.train()
@@ -322,7 +348,7 @@ if __name__ == "__main__":
     reward_config = RewardConfig()
 
     SEED = np.random.randint(100) # 37843
-    env = carSim(seed=SEED, reward_config=reward_config, show_rays=False) # cchange to True to see rays
+    env = carSim(seed=SEED, reward_config=reward_config, show_rays=True) # cchange to True to see rays
     observation, info = env.reset()
 
     # Get input dimensions from LiDAR readings (5 distances)
