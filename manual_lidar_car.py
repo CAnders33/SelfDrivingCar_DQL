@@ -5,7 +5,8 @@ import pygame
 
 class ManualCarSim(gym.Wrapper):
     def __init__(self, seed=None, show_lidar=True):
-        env = gym.make("CarRacing-v3", render_mode="human")
+        # env = gym.make("CarRacing-v3", render_mode="human")
+        env = gym.make("CarRacing-v3", render_mode="rgb_array")
         super().__init__(env)
         
         self.show_lidar = show_lidar
@@ -39,10 +40,11 @@ class ManualCarSim(gym.Wrapper):
         - Straight right (-90°)
         """
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.6), int(w * 0.5)  # Approximate car position
+        car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
         
         # Ordered from left to right
-        directions = [90, 45, 0, -45, -90]  # Degrees relative to car
+        # directions = [90, 45, 0, -45, -90]  # Degrees relative to car
+        directions = [180, 135, 90, 45, 0]
         distances = {}
 
         for angle in directions:
@@ -67,15 +69,7 @@ class ManualCarSim(gym.Wrapper):
                     return d
         return max_distance  # Default if no edge found
 
-    def is_road(self, pixel):
-        """
-        Check if a pixel is part of the road based on RGB values
-        """
-        # Dark/grey color detection with higher tolerance
-        return (70 < np.mean(pixel) < 140 and  # Average intensity
-                np.std(pixel) < 30 and  # Color similarity
-                pixel[1] < 150)  # Not too green
-
+    
     def render(self):
         # Get the base frame from the environment
         frame = self.env.render()
@@ -85,17 +79,33 @@ class ManualCarSim(gym.Wrapper):
             distances = self.get_lidar_readings(self.current_obs)
 
             # Draw LiDAR rays
-            x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.6)  # Car position
+            x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
             for angle, dist in distances.items():
                 angle_rad = np.radians(angle)
                 x2, y2 = int(x1 + dist * np.cos(angle_rad)), int(y1 - dist * np.sin(angle_rad))
                 # Draw bright red rays for better visibility
-                cv2.line(frame, (x1, y1), (x2, y2), (255, 50, 50), 2)
+                cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
 
             # Draw car position indicator
             cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1)
 
         return frame
+
+
+    def is_road(self, pixel):
+        """
+        Check if a pixel is part of the road based on RGB values
+        """
+        # Dark/grey color detection with higher tolerance
+        # return (70 < np.mean(pixel) < 140 and  # Average intensity
+        #         np.std(pixel) < 30 and  # Color similarity
+        #         pixel[1] < 150)  # Not too green
+
+        b, g, r = pixel  # OpenCV uses BGR order
+        # Define "green" if G is high AND clearly above R and B
+        if g > 100 and g > r + 30 and g > b + 30:
+            return False  # It's green
+        return True
 
     def toggle_lidar(self):
         """ Toggle the LiDAR visualization on/off """
@@ -132,6 +142,7 @@ def get_keyboard_action():
 # Main function
 if __name__ == "__main__":
     import pygame
+    pygame.init()
     
     SEED = np.random.randint(1, 90000) # 37843
     env = ManualCarSim(seed=SEED, show_lidar=True)  # Start with LiDAR visualization enabled
@@ -167,6 +178,13 @@ if __name__ == "__main__":
         
         # Step environment
         observation, reward, terminated, truncated, info = env.step(action)
+
+        frame = env.render()
+        cv2.imshow("CarRacing with LiDARRR", frame)
+        # cv2.putText(frame, "Custom LiDAR Frame", (10, 20),
+        #     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # cv2.waitKey(1) 
+
         
         # Get lidar readings and road status every 3 frames
         if frame_count % 3 == 0:
@@ -189,10 +207,15 @@ if __name__ == "__main__":
             on_road = left_side_on_road or right_side_on_road
             
             # Print both lidar and road status
+            # print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
+            #     lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
+            #     "On Road" if on_road else "Off Road" 
+            # ), end='')
             print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
-                lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
+                lidar_readings[180], lidar_readings[135], lidar_readings[90], lidar_readings[45], lidar_readings[0],
                 "On Road" if on_road else "Off Road" 
             ), end='')
+            # directions = [180, 135, 90, 45, 0]
 
             if not on_road:
                 terminated = True
@@ -206,4 +229,7 @@ if __name__ == "__main__":
         clock.tick(60)  # Limit to 60 FPS
 
     print("\nQuitting...")
+    print("\nQuitting...")
+    cv2.destroyAllWindows()
+    env.close()
     env.close()
