@@ -17,7 +17,7 @@ class RewardConfig:
         self.living_cost = -0.03             # Penalty per step to discourage inaction
 
 class carSim(gym.Wrapper):
-    def __init__(self, seed=None, reward_config=None, show_rays=False):
+    def __init__(self, seed=None, reward_config=None, show_rays=True):
         env = gym.make("CarRacing-v3", render_mode="human")
         super().__init__(env)
         
@@ -82,16 +82,23 @@ class carSim(gym.Wrapper):
         self.last_position = current_position
         return obs, reward, done, truncated, info
 
+
+
     def get_lidar_readings(self, frame):
         """
         Simulated LiDAR using image processing to detect track edges.
-        Returns distances for five beams from three positions.
+        Returns distances for five beams:
+        - Straight left (90°)
+        - 45° left of forward (45°)
+        - Straight ahead (0°)
+        - 45° right of forward (-45°)
+        - Straight right (-90°)
         """
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.7), int(w * 0.5)  # Car center position
+        car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
         
-        # Define sensor positions at the wheels bc it thinks it is off the trackwith two whlls still on
-        directions = [90, 45, 0, -45, -90]  # Degrees relative to car
+        # Ordered from left to right
+        directions = [175, 120, 90, 60, 5]
         distances = {}
 
         for angle in directions:
@@ -101,6 +108,9 @@ class carSim(gym.Wrapper):
                 distance = self.cast_ray(frame, car_x, car_y, angle)
             distances[angle] = distance
 
+        if self.show_rays:
+            print('inside  if')
+            self.render(frame, distances)
         return distances
 
     def cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
@@ -141,21 +151,47 @@ class carSim(gym.Wrapper):
                     return d
         return max_distance
 
+
+    # def render(self, frame, distances):
+    #     # Get the base frame from the environment
+    #     # frame = self.env.render()
+
+    #     scale_x = 600/96
+    #     scale_y = 400/96
+        
+    #     if self.show_lidar and hasattr(self, 'current_obs'):
+    #         # Use the stored observation for LiDAR calculations
+    #         distances = self.get_lidar_readings(self.current_obs)
+
+    #         # Draw LiDAR rays
+    #         x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
+    #         for angle, dist in distances.items():
+    #             angle_rad = np.radians(angle)
+    #             x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
+    #             # Draw bright red rays for better visibility
+    #             cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
+
+    #         # Draw car position indicator
+    #         cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1)
+
+    #     return frame
+
+
     def is_road(self, pixel):
         """
         Check if a pixel is part of the road based on RGB values
         """
         # Dark/grey color detection with higher tolerance
-        return (60 < np.mean(pixel) < 150 and  # Average intensity
-                np.std(pixel) < 35 and  # Color similarity
-                pixel[1] < 150)  # Not too green
+        # return (70 < np.mean(pixel) < 140 and  # Average intensity
+        #         np.std(pixel) < 30 and  # Color similarity
+        #         pixel[1] < 150)  # Not too green
 
-    # def is_road(self, pixel):
-    #     hsv = cv2.cvtColor(np.uint8([[pixel]]), cv2.COLOR_RGB2HSV)[0][0]
-    #     h, s, v = hsv
-
-    #     # Road is gray: low saturation, medium value
-    #     return s < 40 and v < 180
+        # Wil detect green for not in road instead of grey for in road
+        b, g, r = pixel  # OpenCV uses BGR order
+        # Define "green" if G is high AND clearly above R and B
+        if g > 100 and g > r + 30 and g > b + 30:
+            return False  # It's green
+        return True
 
     def render(self):
         return self.env.render()
@@ -265,7 +301,17 @@ class DQL:
                 
                 action = self.select_action(state_vector)
                 lidar_str = ", ".join(f"{int(x):3d}" for x in list(lidar_readings.values()))
-                print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
+                # print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
+                print(
+                    f"\r\033[KLiDAR: [{lidar_str}] | {self.actions[action]:9s}\t | Step: {self.steps:5d}\t | "
+                    f"Left 90°: {lidar_readings[175]:<3} | Left 45°: {lidar_readings[120]:<3} | Forward: {lidar_readings[90]:<3} | "
+                    f"Right 45°: {lidar_readings[60]:<3} | Right 90°: {lidar_readings[5]:<3} | ",
+                    end='',
+                    flush=True
+                )
+                # [175, 120, 90, 60, 5]
+
+
                 
                 # Convert discrete action to continuous space
                 continuous_action = self._discrete_to_continuous(action)

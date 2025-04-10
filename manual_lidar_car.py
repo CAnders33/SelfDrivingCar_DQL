@@ -43,8 +43,8 @@ class ManualCarSim(gym.Wrapper):
         car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
         
         # Ordered from left to right
-        # directions = [90, 45, 0, -45, -90]  # Degrees relative to car
-        directions = [180, 135, 90, 45, 0]
+        # directions = [180, 135, 90, 45, 0]
+        directions = [175, 120, 90, 60, 5]
         distances = {}
 
         for angle in directions:
@@ -215,10 +215,10 @@ if __name__ == "__main__":
             #     "On Road" if on_road else "Off Road" 
             # ), end='')
             print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
-                lidar_readings[180], lidar_readings[135], lidar_readings[90], lidar_readings[45], lidar_readings[0],
+                lidar_readings[175], lidar_readings[120], lidar_readings[90], lidar_readings[60], lidar_readings[5],
                 "On Road" if on_road else "Off Road" 
             ), end='')
-            # directions = [180, 135, 90, 45, 0]
+            # directions = [175, 120, 90, 60, 5]
 
             if not on_road:
                 terminated = True
