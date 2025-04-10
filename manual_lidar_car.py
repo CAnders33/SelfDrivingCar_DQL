@@ -73,6 +73,9 @@ class ManualCarSim(gym.Wrapper):
     def render(self):
         # Get the base frame from the environment
         frame = self.env.render()
+
+        scale_x = 600/96
+        scale_y = 400/96
         
         if self.show_lidar and hasattr(self, 'current_obs'):
             # Use the stored observation for LiDAR calculations
@@ -82,7 +85,7 @@ class ManualCarSim(gym.Wrapper):
             x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
             for angle, dist in distances.items():
                 angle_rad = np.radians(angle)
-                x2, y2 = int(x1 + dist * np.cos(angle_rad)), int(y1 - dist * np.sin(angle_rad))
+                x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
                 # Draw bright red rays for better visibility
                 cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
 
