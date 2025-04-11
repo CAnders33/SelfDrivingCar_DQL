@@ -16,14 +16,107 @@ class RewardConfig:
         self.distance_reward_weight = 2    # Weight for distance covered
         self.living_cost = -0.03             # Penalty per step to discourage inaction
 
+class CustomRenderer:
+    def __init__(self, env):
+        self.env = env
+        self.overlay_enabled = True
+        self.track_color = (255, 255, 255)  # White for road
+        self.grass_color = (0, 0, 0)        # Black for non-road
+        self.screen_width = 96   # Default CarRacing screen width
+        self.screen_height = 96  # Default CarRacing screen height
+        self.scale_factor = 4.0  # Scale factor for world to screen coordinates
+        self.zoom = 4.0         # Zoom factor for visualization
+        self.car_radius = 2     # Radius of car circle in pixels
+        self.show_debug = True  # Show additional debug information
+
+    def world_to_screen(self, world_x, world_y):
+        """Convert world coordinates to screen coordinates"""
+        # Apply zoom and center the coordinates
+        screen_x = int(self.screen_width / 2 + world_x * self.zoom)
+        screen_y = int(self.screen_height / 2 - world_y * self.zoom)  # Flip y-axis
+        return screen_x, screen_y
+
+    def screen_to_world(self, screen_x, screen_y):
+        """Convert screen coordinates to world coordinates"""
+        world_x = (screen_x - self.screen_width / 2) / self.zoom
+        world_y = -(screen_y - self.screen_height / 2) / self.zoom  # Flip y-axis
+        return world_x, world_y
+
+    def modify_frame(self, frame, car_position=None, car_angle=None, additional_info=None):
+        """
+        Modify the frame before displaying it with car position and orientation.
+        """
+        if frame is None or frame.size == 0:
+            return np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
+
+        try:
+            modified = frame.copy()
+
+            # Convert to grayscale first
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            
+            # Create binary mask for road (white) and non-road (black)
+            track_mask = gray > 150
+            grass_mask = ~track_mask
+
+            # Create RGB image with white road and black background
+            modified = np.zeros_like(frame)
+            modified[track_mask] = self.track_color
+            modified[grass_mask] = self.grass_color
+
+            # Draw car position if available
+            if self.overlay_enabled and car_position is not None:
+                world_x, world_y = car_position
+                screen_x, screen_y = self.world_to_screen(world_x, world_y)
+                
+                # Draw car circle
+                if 0 <= screen_x < self.screen_width and 0 <= screen_y < self.screen_height:
+                    # Draw car body
+                    cv2.circle(modified, (screen_x, screen_y), self.car_radius, (255, 0, 0), -1)
+                    
+                    # Draw direction indicator if angle available
+                    if car_angle is not None:
+                        angle_rad = np.radians(car_angle)
+                        end_x = int(screen_x + self.car_radius * 2 * np.cos(angle_rad))
+                        end_y = int(screen_y + self.car_radius * 2 * np.sin(angle_rad))
+                        cv2.line(modified, (screen_x, screen_y), (end_x, end_y), (0, 255, 0), 1)
+
+            # Add debug info
+            if self.show_debug and additional_info:
+                cv2.putText(modified, str(additional_info), (10, 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+            return modified
+        except Exception as e:
+            print(f"Error in modify_frame: {e}")
+            return frame  # Return original frame if modification fails
+
+    def render(self, frame, car_position=None, info=None):
+        try:
+            if frame is None:
+                return
+
+            mod_frame = self.modify_frame(frame, car_position, info)
+            
+            # Ensure window name is consistent
+            window_name = "CarRacing Simulation"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.imshow(window_name, mod_frame)
+            cv2.waitKey(1)
+        except Exception as e:
+            print(f"Error in render: {e}")
+
 class carSim(gym.Wrapper):
-    def __init__(self, seed=None, reward_config=None, show_rays=True):
-        env = gym.make("CarRacing-v3", render_mode="human")
+    def __init__(self, seed=None, reward_config=None, renderer=None, render_mode="rgb_array"):
+        env = gym.make("CarRacing-v3", render_mode=render_mode)
         super().__init__(env)
+        
+        self.renderer = renderer if renderer else CustomRenderer(env)
+        self._render_mode = render_mode  # Use private variable instead of property
         
         self.reward_config = RewardConfig()
         self.last_position = None
-        self.show_rays = show_rays  # Toggle for ray visualization
+        self.show_rays = self._render_mode == "human"  # Only show rays in human mode
         
         if seed is not None:
             self.seed_value = seed
@@ -88,12 +181,15 @@ class carSim(gym.Wrapper):
         """
         Simulated LiDAR using image processing to detect track edges.
         Returns distances for five beams:
-        - Straight left (90°)
-        - 45° left of forward (45°)
-        - Straight ahead (0°)
-        - 45° right of forward (-45°)
-        - Straight right (-90°)
+        - Straight left (175°)
+        - 45° left of forward (120°)
+        - Straight ahead (90°)
+        - 45° right of forward (60°)
+        - Straight right (5°)
         """
+        if frame is None or frame.size == 0:
+            return {175: 1, 120: 1, 90: 1, 60: 1, 5: 1}
+
         h, w, _ = frame.shape
         car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
         
@@ -109,16 +205,27 @@ class carSim(gym.Wrapper):
             distances[angle] = distance
 
         if self.show_rays:
-            print('inside  if')
-            self.render(frame, distances)
+            # Create debug visualization
+            debug_frame = frame.copy()
+            cv2.circle(debug_frame, (car_x, car_y), 2, (255, 0, 0), -1)  # Car position
+            for angle in directions:
+                end_x = int(car_x + distances[angle] * np.cos(np.radians(angle)))
+                end_y = int(car_y - distances[angle] * np.sin(np.radians(angle)))
+                cv2.line(debug_frame, (car_x, car_y), (end_x, end_y), (255, 255, 0), 1)
+                cv2.circle(debug_frame, (end_x, end_y), 3, (0, 0, 255), -1)
+            cv2.namedWindow("LIDAR Debug", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("LIDAR Debug", w * 4, h * 4)  # Make window 4x larger
+            cv2.imshow("LIDAR Debug", debug_frame)
+            cv2.waitKey(1)
+            
         return distances
 
-    def cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
+    def cast_ray(self, frame, start_x, start_y, angle, max_distance=100, min_distance=1):
         """Cast a ray and return distance to track edge."""
         angle_rad = np.radians(angle)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
 
-        for d in range(1, max_distance):
+        for d in range(min_distance, max_distance):
             x = int(start_x + d * cos_a)
             y = int(start_y - d * sin_a)
 
@@ -127,8 +234,8 @@ class carSim(gym.Wrapper):
                 if not self.is_road(pixel):                    
                     return d
         return max_distance
-    
-    def show_cast_ray(self, frame, start_x, start_y, angle, max_distance=100):
+
+    def show_cast_ray(self, frame, start_x, start_y, angle, max_distance=100, min_distance=1):
         angle_rad = np.radians(angle)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
         frame_copy = frame.copy()  # Create a copy for visualization
@@ -136,7 +243,7 @@ class carSim(gym.Wrapper):
         # Draw a small circle at the sensor position
         cv2.circle(frame_copy, (start_x, start_y), 2, (0, 255, 0), -1)  # Green dot
 
-        for d in range(1, max_distance):
+        for d in range(min_distance, max_distance):
             x = int(start_x + d * cos_a)
             y = int(start_y - d * sin_a)
 
@@ -146,8 +253,6 @@ class carSim(gym.Wrapper):
                     # Draw the ray line from start to hit point
                     cv2.line(frame_copy, (start_x, start_y), (x, y), (255, 255, 0), 1)
                     cv2.circle(frame_copy, (x, y), 3, (0, 0, 255), -1)  # Red dot
-                    cv2.imshow("Ray Hits", frame_copy)
-                    cv2.waitKey(1)
                     return d
         return max_distance
 
@@ -181,12 +286,6 @@ class carSim(gym.Wrapper):
         """
         Check if a pixel is part of the road based on RGB values
         """
-        # Dark/grey color detection with higher tolerance
-        # return (70 < np.mean(pixel) < 140 and  # Average intensity
-        #         np.std(pixel) < 30 and  # Color similarity
-        #         pixel[1] < 150)  # Not too green
-
-        # Wil detect green for not in road instead of grey for in road
         b, g, r = pixel  # OpenCV uses BGR order
         # Define "green" if G is high AND clearly above R and B
         if g > 100 and g > r + 30 and g > b + 30:
@@ -194,8 +293,34 @@ class carSim(gym.Wrapper):
         return True
 
     def render(self):
-        return self.env.render()
+        raw_frame = self.env.render()  # This returns an RGB array or None in human mode
+        
+        if raw_frame is None:
+            print("Warning: Received None frame from environment")
+            return
+        
+        car = self.unwrapped.car
+        if car and car.hull:
+            car_pos = (car.hull.position.x, car.hull.position.y)
+            car_angle = np.degrees(car.hull.angle)  # Convert angle to degrees
+            
+            # Add speed info for debugging
+            speed = np.linalg.norm(car.hull.linearVelocity)
+            info = f"Speed: {speed:.2f} m/s | Angle: {car_angle:.1f}°"
+            if self.show_rays:
+                # Add LiDAR readings if rays are enabled
+                lidar = self.get_lidar_readings(self.current_obs)
+                lidar_str = ", ".join(f"{int(v)}" for v in lidar.values())
+                info += f" | LiDAR: [{lidar_str}]"
+        else:
+            car_pos = None
+            car_angle = None
+            info = "No car data"
 
+        # Only use custom renderer for rgb_array mode
+        mod_frame = self.renderer.modify_frame(raw_frame, car_pos, car_angle, info)
+        self.renderer.render(mod_frame, None, None)
+    
     def close(self):
         self.env.close()
 
@@ -209,7 +334,7 @@ class DQL:
     target_update = 10      # Update target network after agent takes n steps
 
     # Actions taken every 3 frames by default with carracing-v3
-    actions = ['Left', 'Right', 'Straight', 'Accelerate', 'Brake']
+    actions = ['Left', 'Right', 'Straight', 'Accelerate', 'Coast', 'Brake']
 
     def __init__(self, state_dim, action_dim, env):
         self.state_dim = state_dim
@@ -323,7 +448,9 @@ class DQL:
                 state = next_obs
                 total_reward += reward
 
-            print(f"Episode {episode + 1}, Total Reward: {total_reward:.2f}, Epsilon: {self.epsilon:.3f}")
+            # print("\r\033[K", end='')
+            print()
+            # print(f"Episode {episode + 1:3d} | Total Reward: {total_reward:7.2f} | Epsilon: {self.epsilon:6.3f}")
             self.epsilon = max(0.01, self.epsilon * self.epsilon_decay)  # Decay epsilon with minimum value
 
     def _discrete_to_continuous(self, action):
@@ -332,6 +459,7 @@ class DQL:
         elif action == 1: return np.array([1.0, 0, 0])  # Right
         elif action == 2: return np.array([0, 0, 0])    # Straight
         elif action == 3: return np.array([0, 1.0, 0])  # Accelerate
+        elif action == 4: return np.array([0, 0.5, 0])  # Coast
         else: return np.array([0, 0, 0.8])              # Brake
 
     def save_model(self, filename):
@@ -361,14 +489,23 @@ class DQL:
                 print(f"{name} first 5 values: {param.data[:5]}")
                 break
 
-
 # Main function
 if __name__ == "__main__":
     # change rewards in class above
     reward_config = RewardConfig()
 
     SEED = np.random.randint(100) # 37843
-    env = carSim(seed=SEED, reward_config=reward_config, show_rays=False) # cchange to True to see rays
+    
+    # Ask user for render mode
+    print("\nAvailable render modes:")
+    print("1. rgb_array (with custom visualization)")
+    print("2. human (native pygame window)")
+    render_choice = input("Enter render mode number (or press Enter for rgb_array): ").strip()
+    
+    render_mode = "human" if render_choice == "2" else "rgb_array"
+    
+    # Create environment with selected render mode
+    env = carSim(seed=SEED, reward_config=reward_config, render_mode=render_mode)
     observation, info = env.reset()
 
     # Get input dimensions from LiDAR readings (5 distances)
@@ -402,10 +539,33 @@ if __name__ == "__main__":
     else:
         print("\nNo models directory found. Starting with fresh model")
 
+    # List available data files to append to and let user choose
+    if os.path.exists('data'):
+        data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
+        if data_files:
+            print("\Prior Data Save Files:")
+            for i, data_files in enumerate(data_files):
+                print(f"{i+1}. {data_files}")
+            
+            choice = input("\nEnter file number to load (or press Enter for new file): ")
+            if choice.strip() and choice.isdigit() and 1 <= int(choice) <= len(data_files):
+                data_name = data_files[int(choice)-1].replace('.csv', '')
+                try:
+                    print(f"Data will be appended to: {data_name}")
+                except Exception as e:
+                    print(f"Error loading file: {e}")
+                    print("Starting with empty data file")
+            else:
+                print("Starting with empty data file")
+        else:
+            print("\nNo data directory found. Starting with empty data file")
+    else:
+        print("\nNo data directory found. Starting with empty file")
+
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        for i in range(3):
+        for i in range(10):
             agent.train_agent(episodes=200)  # Number of episodes to train
         
         # Get filename for saving model
