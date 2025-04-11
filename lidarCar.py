@@ -42,6 +42,7 @@ class CustomRenderer:
         world_x = (screen_x - self.screen_width / 2) / self.zoom
         world_y = -(screen_y - self.screen_height / 2) / self.zoom  # Flip y-axis
         return world_x, world_y
+    
 
     def modify_frame(self, frame, car_position=None, car_angle=None, additional_info=None):
         """
@@ -81,6 +82,7 @@ class CustomRenderer:
                         end_x = int(screen_x + self.car_radius * 2 * np.cos(angle_rad))
                         end_y = int(screen_y + self.car_radius * 2 * np.sin(angle_rad))
                         cv2.line(modified, (screen_x, screen_y), (end_x, end_y), (0, 255, 0), 1)
+            
 
             # Add debug info
             if self.show_debug and additional_info:
@@ -109,6 +111,7 @@ class CustomRenderer:
 
 class carSim(gym.Wrapper):
     def __init__(self, seed=None, reward_config=None, renderer=None, render_mode="rgb_array"):
+        print('render mode: ', render_mode)
         env = gym.make("CarRacing-v3", render_mode=render_mode)
         super().__init__(env)
         
@@ -209,18 +212,29 @@ class carSim(gym.Wrapper):
             distances[angle] = distance
 
         if self.show_rays:
-            # Create debug visualization
-            debug_frame = frame.copy()
-            cv2.circle(debug_frame, (car_x, car_y), 2, (255, 0, 0), -1)  # Car position
-            for angle in directions:
-                end_x = int(car_x + distances[angle] * np.cos(np.radians(angle)))
-                end_y = int(car_y - distances[angle] * np.sin(np.radians(angle)))
-                cv2.line(debug_frame, (car_x, car_y), (end_x, end_y), (255, 255, 0), 1)
-                cv2.circle(debug_frame, (end_x, end_y), 3, (0, 0, 255), -1)
-            cv2.namedWindow("LIDAR Debug", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("LIDAR Debug", w * 4, h * 4)  # Make window 4x larger
-            cv2.imshow("LIDAR Debug", debug_frame)
-            cv2.waitKey(1)
+            # show rays
+            scale_x = 600/96
+            scale_y = 400/96
+
+            x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
+            for angle, dist in distances.items():
+                angle_rad = np.radians(angle)
+                x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
+                cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
+                cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1) # Draw car position indicator
+
+            # # Create debug visualization
+            # debug_frame = frame.copy()
+            # cv2.circle(debug_frame, (car_x, car_y), 2, (255, 0, 0), -1)  # Car position
+            # for angle in directions:
+            #     end_x = int(car_x + distances[angle] * np.cos(np.radians(angle)))
+            #     end_y = int(car_y - distances[angle] * np.sin(np.radians(angle)))
+            #     cv2.line(debug_frame, (car_x, car_y), (end_x, end_y), (255, 255, 0), 1)
+            #     cv2.circle(debug_frame, (end_x, end_y), 3, (0, 0, 255), -1)
+            # cv2.namedWindow("LIDAR Debug", cv2.WINDOW_NORMAL)
+            # cv2.resizeWindow("LIDAR Debug", w * 4, h * 4)  # Make window 4x larger
+            # cv2.imshow("LIDAR Debug", debug_frame)
+            # cv2.waitKey(1)
             
         return distances
 
@@ -261,30 +275,6 @@ class carSim(gym.Wrapper):
         return max_distance
 
 
-    # def render(self, frame, distances):
-    #     # Get the base frame from the environment
-    #     # frame = self.env.render()
-
-    #     scale_x = 600/96
-    #     scale_y = 400/96
-        
-    #     if self.show_lidar and hasattr(self, 'current_obs'):
-    #         # Use the stored observation for LiDAR calculations
-    #         distances = self.get_lidar_readings(self.current_obs)
-
-    #         # Draw LiDAR rays
-    #         x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
-    #         for angle, dist in distances.items():
-    #             angle_rad = np.radians(angle)
-    #             x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
-    #             # Draw bright red rays for better visibility
-    #             cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
-
-    #         # Draw car position indicator
-    #         cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1)
-
-    #     return frame
-
 
     def is_road(self, pixel):
         """
@@ -295,10 +285,10 @@ class carSim(gym.Wrapper):
         if g > 100 and g > r + 30 and g > b + 30:
             return False  # It's green
         return True
+    
 
     def render(self):
         raw_frame = self.env.render()  # This returns an RGB array or None in human mode
-        
         if raw_frame is None:
             print("Warning: Received None frame from environment")
             return
@@ -323,6 +313,7 @@ class carSim(gym.Wrapper):
 
         # Only use custom renderer for rgb_array mode
         mod_frame = self.renderer.modify_frame(raw_frame, car_pos, car_angle, info)
+        # mod_frame = self.draw_rays(mod_frame)
         self.renderer.render(mod_frame, None, None)
     
     def close(self):
@@ -431,17 +422,8 @@ class DQL:
                 
                 action = self.select_action(state_vector)
                 lidar_str = ", ".join(f"{int(x):3d}" for x in list(lidar_readings.values()))
-                # print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
-                print(
-                    f"\r\033[KLiDAR: [{lidar_str}] | {self.actions[action]:9s}\t | Step: {self.steps:5d}\t | "
-                    f"Left 90°: {lidar_readings[175]:<3} | Left 45°: {lidar_readings[120]:<3} | Forward: {lidar_readings[90]:<3} | "
-                    f"Right 45°: {lidar_readings[60]:<3} | Right 90°: {lidar_readings[5]:<3} | ",
-                    end='',
-                    flush=True
-                )
+                print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
                 # [175, 120, 90, 60, 5]
-
-
                 
                 # Convert discrete action to continuous space
                 continuous_action = self._discrete_to_continuous(action)
