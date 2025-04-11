@@ -506,10 +506,33 @@ if __name__ == "__main__":
     else:
         print("\nNo models directory found. Starting with fresh model")
 
+    # List available data files to append to and let user choose
+    if os.path.exists('data'):
+        data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
+        if data_files:
+            print("\Prior Data Save Files:")
+            for i, data_files in enumerate(data_files):
+                print(f"{i+1}. {data_files}")
+            
+            choice = input("\nEnter file number to load (or press Enter for new file): ")
+            if choice.strip() and choice.isdigit() and 1 <= int(choice) <= len(data_files):
+                data_name = data_files[int(choice)-1].replace('.csv', '')
+                try:
+                    print(f"Data will be appended to: {data_name}")
+                except Exception as e:
+                    print(f"Error loading file: {e}")
+                    print("Starting with empty data file")
+            else:
+                print("Starting with empty data file")
+        else:
+            print("\nNo data directory found. Starting with empty data file")
+    else:
+        print("\nNo data directory found. Starting with empty file")
+
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        for i in range(3):
+        for i in range(10):
             agent.train_agent(episodes=200)  # Number of episodes to train
         
         # Get filename for saving model
