@@ -575,7 +575,7 @@ if __name__ == "__main__":
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        for i in range(1):
+        for i in range(500):
             agent.train_agent(episodes=100, csv_path=csv_path)  # Number of episodes to train
         
         # Get filename for saving model
