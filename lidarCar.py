@@ -175,6 +175,8 @@ class carSim(gym.Wrapper):
         self.last_position = current_position
         return obs, reward, done, truncated, info
 
+
+
     def get_lidar_readings(self, frame):
         """
         Simulated LiDAR using image processing to detect track edges.
@@ -189,7 +191,7 @@ class carSim(gym.Wrapper):
             return {175: 1, 120: 1, 90: 1, 60: 1, 5: 1}
 
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.72), int(w * 0.5)  # Approximate car position
+        car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
         
         # Ordered from left to right
         directions = [175, 120, 90, 60, 5]
@@ -253,6 +255,32 @@ class carSim(gym.Wrapper):
                     cv2.circle(frame_copy, (x, y), 3, (0, 0, 255), -1)  # Red dot
                     return d
         return max_distance
+
+
+    # def render(self, frame, distances):
+    #     # Get the base frame from the environment
+    #     # frame = self.env.render()
+
+    #     scale_x = 600/96
+    #     scale_y = 400/96
+        
+    #     if self.show_lidar and hasattr(self, 'current_obs'):
+    #         # Use the stored observation for LiDAR calculations
+    #         distances = self.get_lidar_readings(self.current_obs)
+
+    #         # Draw LiDAR rays
+    #         x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
+    #         for angle, dist in distances.items():
+    #             angle_rad = np.radians(angle)
+    #             x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
+    #             # Draw bright red rays for better visibility
+    #             cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
+
+    #         # Draw car position indicator
+    #         cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1)
+
+    #     return frame
+
 
     def is_road(self, pixel):
         """
@@ -398,12 +426,17 @@ class DQL:
                 
                 action = self.select_action(state_vector)
                 lidar_str = ", ".join(f"{int(x):3d}" for x in list(lidar_readings.values()))
+                # print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
                 print(
-                    # \r\033[K
-                    f"\rEpisode {episode + 1:3d} | LiDAR: [{lidar_str}] | {self.actions[action]:9s}\t | Step: {self.steps:5d}\t | Total Reward: {total_reward:7.2f} | Epsilon: {self.epsilon:6.3f}",
+                    f"\r\033[KLiDAR: [{lidar_str}] | {self.actions[action]:9s}\t | Step: {self.steps:5d}\t | "
+                    f"Left 90°: {lidar_readings[175]:<3} | Left 45°: {lidar_readings[120]:<3} | Forward: {lidar_readings[90]:<3} | "
+                    f"Right 45°: {lidar_readings[60]:<3} | Right 90°: {lidar_readings[5]:<3} | ",
                     end='',
                     flush=True
                 )
+                # [175, 120, 90, 60, 5]
+
+
                 
                 # Convert discrete action to continuous space
                 continuous_action = self._discrete_to_continuous(action)
