@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import csv
 
 class RewardConfig:
     def __init__(self):
@@ -117,6 +118,7 @@ class carSim(gym.Wrapper):
         self.reward_config = RewardConfig()
         self.last_position = None
         self.show_rays = self._render_mode == "human"  # Only show rays in human mode
+        self.episode_distance = 0.0
         
         if seed is not None:
             self.seed_value = seed
@@ -128,8 +130,9 @@ class carSim(gym.Wrapper):
         if hasattr(self, 'seed_value'):
             kwargs['seed'] = self.seed_value
         obs, info = super().reset(**kwargs)
-        self.last_position = self.unwrapped.car.hull.position
+        self.last_position = self.unwrapped.car.hull.position.copy()
         self.current_obs = obs
+        self.episode_distance = 0.0
         return obs, info
 
     def step(self, action):
@@ -162,6 +165,7 @@ class carSim(gym.Wrapper):
             last_pos = np.array([self.last_position.x, self.last_position.y])
             distance = np.linalg.norm(curr_pos - last_pos)
             distance_reward = distance * self.reward_config.distance_reward_weight
+            self.episode_distance += distance
         else:
             distance_reward = 0
         
@@ -172,7 +176,7 @@ class carSim(gym.Wrapper):
             reward = self.reward_config.off_track_penalty
             done = True
 
-        self.last_position = current_position
+        self.last_position = current_position.copy()
         return obs, reward, done, truncated, info
 
 
@@ -411,12 +415,13 @@ class DQL:
         if self.steps % self.target_update == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
-    def train_agent(self, episodes):
+    def train_agent(self, episodes, csv_path=None):
         for episode in range(episodes):
             state, _ = self.env.reset()
             total_reward = 0
             done = False
             truncated = False
+            start_time = time.time()
 
             while not (done or truncated):
                 self.steps += 1
@@ -448,8 +453,22 @@ class DQL:
                 state = next_obs
                 total_reward += reward
 
+            elapsed_time = time.time() - start_time
+            distance = self.env.episode_distance
+            avg_speed = distance / elapsed_time if elapsed_time > 0 else 0
+
+            # Save data
+            if csv_path:
+                with open(csv_path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([episode + 1, distance, elapsed_time, avg_speed, total_reward])
+
+            print(f"\nEpisode {episode + 1} Summary:")
+            print(f"  Distance: {distance:.2f} m")
+            print(f"  Time: {elapsed_time:.2f} sec")
+            print(f"  Avg Speed: {avg_speed:.2f} m/s")
+            print(f"  Total Reward: {total_reward:.2f}")
             # print("\r\033[K", end='')
-            print()
             # print(f"Episode {episode + 1:3d} | Total Reward: {total_reward:7.2f} | Epsilon: {self.epsilon:6.3f}")
             self.epsilon = max(0.01, self.epsilon * self.epsilon_decay)  # Decay epsilon with minimum value
 
@@ -540,33 +559,42 @@ if __name__ == "__main__":
         print("\nNo models directory found. Starting with fresh model")
 
     # List available data files to append to and let user choose
-    if os.path.exists('data'):
-        data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
-        if data_files:
-            print("\Prior Data Save Files:")
-            for i, data_files in enumerate(data_files):
-                print(f"{i+1}. {data_files}")
-            
-            choice = input("\nEnter file number to load (or press Enter for new file): ")
-            if choice.strip() and choice.isdigit() and 1 <= int(choice) <= len(data_files):
-                data_name = data_files[int(choice)-1].replace('.csv', '')
-                try:
-                    print(f"Data will be appended to: {data_name}")
-                except Exception as e:
-                    print(f"Error loading file: {e}")
-                    print("Starting with empty data file")
-            else:
-                print("Starting with empty data file")
+    csv_path = None
+    if not os.path.exists('data'):
+        os.makedirs('data')
+    data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
+    if data_files:
+        print("\nPrior Data Save Files:")
+        for i, file in enumerate(data_files):
+            print(f"{i + 1}. {file}")
+
+        choice = input("\nEnter file number to append to (or press Enter to create new file): ").strip()
+
+        if choice and choice.isdigit() and 1 <= int(choice) <= len(data_files):
+            csv_path = os.path.join('data', data_files[int(choice) - 1])
+            print(f"Appending to existing file: {csv_path}")
         else:
-            print("\nNo data directory found. Starting with empty data file")
+            filename = input("Enter new filename (without .csv): ").strip()
+            csv_path = os.path.join('data', f"{filename or 'episode_data'}.csv")
+            print(f"New file will be created: {csv_path}")
     else:
-        print("\nNo data directory found. Starting with empty file")
+        print("No existing CSV files found.")
+        filename = input("Enter new filename (without .csv): ").strip()
+        csv_path = os.path.join('data', f"{filename or 'episode_data'}.csv")
+        print(f"New file will be created: {csv_path}")
+
+    # Initialize CSV with headers if it doesn't already exist
+    if not os.path.exists(csv_path):
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Episode", "Distance (m)", "Time (s)", "Avg Speed (m/s)", "Total Reward"])
+            print("CSV header written.")
 
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        for i in range(10):
-            agent.train_agent(episodes=200)  # Number of episodes to train
+        for i in range(1):
+            agent.train_agent(episodes=100, csv_path=csv_path)  # Number of episodes to train
         
         # Get filename for saving model
         save_name = input("\nEnter filename to save model (without .pth, or press Enter for 'car_dql_model'): ")

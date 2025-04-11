@@ -2,6 +2,10 @@ import gymnasium as gym
 import numpy as np
 import cv2
 import pygame
+import time
+import csv
+import os
+
 
 class ManualCarSim(gym.Wrapper):
     def __init__(self, seed=None, show_lidar=True):
@@ -10,6 +14,9 @@ class ManualCarSim(gym.Wrapper):
         super().__init__(env)
         
         self.show_lidar = show_lidar
+        self.last_position = None
+        self.episode_distance = 0.0
+
         
         if seed is not None:
             self.seed_value = seed
@@ -22,11 +29,24 @@ class ManualCarSim(gym.Wrapper):
             kwargs['seed'] = self.seed_value
         obs, info = self.env.reset(**kwargs)
         self.current_obs = obs
+        self.last_position = self.unwrapped.car.hull.position.copy()
+        self.episode_distance = 0.0
+
         return obs, info
 
     def step(self, action):
         obs, reward, done, truncated, info = self.env.step(action)
         self.current_obs = obs
+        # Distance tracking
+        car = self.unwrapped.car
+        current_position = car.hull.position
+        if self.last_position is not None:
+            curr_pos = np.array([current_position.x, current_position.y])
+            last_pos = np.array([self.last_position.x, self.last_position.y])
+            distance = np.linalg.norm(curr_pos - last_pos)
+            self.episode_distance += distance
+        self.last_position = current_position.copy()
+
         return obs, reward, done, truncated, info
 
     def get_lidar_readings(self, frame):
@@ -146,16 +166,30 @@ def get_keyboard_action():
 if __name__ == "__main__":
     import pygame
     pygame.init()
+    pygame.display.set_mode((100, 100))
     
-    SEED = np.random.randint(1, 90000) # 37843
+    SEED = 617 # 37843
     env = ManualCarSim(seed=SEED, show_lidar=True)  # Start with LiDAR visualization enabled
     observation, info = env.reset()
+    
+    episode_total_reward = 0.0
+    episode_start_time = time.time()
 
     print("Controls:")
     print("- Arrow keys: Steering (left/right) and Gas (up)")
     print("- Space or Down Arrow: Brake")
     print("- L: Toggle LiDAR visualization")
     print("- Q: Quit")
+    
+    if not os.path.exists('data'):
+        os.makedirs('data')
+    csv_path = os.path.join('data', 'manual_episode_data.csv')
+    if not os.path.exists(csv_path):
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Episode", "Distance (m)", "Time (s)", "Avg Speed (m/s)", "Total Reward"])
+    episode_counter = 1
+
     
     running = True
     clock = pygame.time.Clock()
@@ -181,12 +215,14 @@ if __name__ == "__main__":
         
         # Step environment
         observation, reward, terminated, truncated, info = env.step(action)
+        
+        episode_total_reward += reward
 
         frame = env.render()
         cv2.imshow("CarRacing with LiDARRR", frame)
         # cv2.putText(frame, "Custom LiDAR Frame", (10, 20),
         #     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        # cv2.waitKey(1) 
+        cv2.waitKey(1) 
 
         
         # Get lidar readings and road status every 3 frames
@@ -226,6 +262,25 @@ if __name__ == "__main__":
         frame_count += 1
 
         if terminated or truncated:
+            elapsed_time = time.time() - episode_start_time
+            distance = env.episode_distance
+            avg_speed = distance / elapsed_time if elapsed_time > 0 else 0
+
+            # Save to CSV
+            with open(csv_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([episode_counter, distance, elapsed_time, avg_speed, episode_total_reward])
+
+            print(f"\nEpisode {episode_counter} Summary:")
+            print(f"  Distance: {distance:.2f} m")
+            print(f"  Time: {elapsed_time:.2f} sec")
+            print(f"  Avg Speed: {avg_speed:.2f} m/s")
+            print(f"  Total Reward: {episode_total_reward:.2f}")
+
+            episode_counter += 1
+            episode_total_reward = 0.0
+            episode_start_time = time.time()
+
             observation, info = env.reset()
             print("\nTrack reset!")
             
