@@ -10,13 +10,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 import csv
 from shapely.geometry import Point, Polygon
+import math
 
 class RewardConfig:
     def __init__(self):
         self.off_track_penalty = -110        # Penalty for going off track - overfits if too low. Can go fast and crash
-        self.speed_reward_weight = 0.02      # Weight for speed reward
+        self.speed_reward_weight = 0.05      # Weight for speed reward
         self.distance_reward_weight = 0.05    # Weight for distance covered
-        self.living_cost = -0.03             # Penalty per step to discourage inaction
+        self.living_cost = -0.1             # Penalty per step to discourage inaction
 
 class CustomRenderer:
     def __init__(self, env):
@@ -123,6 +124,7 @@ class carSim(gym.Wrapper):
         self.last_position = None
         self.show_rays = self._render_mode == "human"  # Only show rays in human mode
         self.episode_distance = 0.0
+        self.last_action = None
 
         self.check_points = checkpoints
         
@@ -159,6 +161,14 @@ class carSim(gym.Wrapper):
     
 
     def step(self, action):
+        # Reward weights (well-bounded, roughly ~[-5, +5] per step max)
+        SPEED_W      = 0.05    # Reward per m/s of speed (typical range ~0–5)
+        DISTANCE_W   = 2    # Reward per meter traveled
+        CHECKPOINT_R = 300     # Bonus for reaching a checkpoint
+        OFF_TRACK_P  = -100     # Penalty for driving off track
+        LIVING_COST  = -0.05   # Small per-step penalty
+        BRAKE_PENALTY = -0.7  # tune this value
+
         obs, base_reward, done, truncated, info = self.env.step(action)
         self.current_obs = obs
 
@@ -179,34 +189,66 @@ class carSim(gym.Wrapper):
         on_road = left_side_on_road or right_side_on_road
 
         # Calculate rewards
-        speed = np.linalg.norm(car.hull.linearVelocity)  # Speed in m/s
-        speed_reward = speed * self.reward_config.speed_reward_weight
+        speed = np.linalg.norm(car.hull.linearVelocity)
+        speed_reward = SPEED_W * speed
 
-        # Checkpoint reward
-        checkpoint_reward = 0
-        if len(self.check_points) > 0:
-            next_tile_index = self.check_points[0]
-            tile = self.unwrapped.road[next_tile_index]
-            if self.is_car_in_tile(current_position, tile):
-                self.check_points.pop(0)
-                checkpoint_reward = 500
-
-        # Distance covered reward
+        # -- Distance reward
         if self.last_position is not None:
             curr_pos = np.array([current_position.x, current_position.y])
             last_pos = np.array([self.last_position.x, self.last_position.y])
             distance = np.linalg.norm(curr_pos - last_pos)
-            distance_reward = distance * self.reward_config.distance_reward_weight
+            distance_reward = DISTANCE_W * distance
             self.episode_distance += distance
         else:
             distance_reward = 0
-        
-        living_cost = self.reward_config.living_cost
-        reward = base_reward + speed_reward + distance_reward + living_cost + checkpoint_reward
 
+        # -- Checkpoint reward
+        checkpoint_reward = 0
+        if self.check_points:
+            next_tile_index = self.check_points[0]
+            tile = self.unwrapped.road[next_tile_index]
+            if self.is_car_in_tile(current_position, tile):
+                self.check_points.pop(0)
+                checkpoint_reward = CHECKPOINT_R
+                
+        lidar = self.get_lidar_readings(self.current_obs)
+        angles = np.array(list(lidar.keys()))
+        distances = np.array(list(lidar.values()))
+
+        # Normalize distances (optional but helps)
+        norm_distances = np.clip(distances, 0, 100) / 100.0
+        # Convert angles to radians and calculate "forwardness"
+        # Forward is angle 90, so we reward rays that are near that
+        centered = 90
+        spread_factor = 1.5  # Higher = tighter forward focus
+
+        weights = np.exp(-((angles - centered) ** 2) / (2 * (spread_factor * 20) ** 2))
+
+        lidar_directional_reward = np.sum(weights * norm_distances)
+        lidar_reward_weight = 0.5  # tune this!
+
+        # -- Combine rewards
+        reward = speed_reward + distance_reward + checkpoint_reward
+        reward += lidar_reward_weight * lidar_directional_reward
+        
+        if action[2] > 0.1:  # If brake component is nonzero
+            reward += BRAKE_PENALTY
+            
+        if speed < 1.0:
+            reward += -1  # stronger penalty for staying idle
+            
+        if self.last_action is not None:
+            if (self.last_action[1] > 0.5 and action[2] > 0.1):  # was accelerating, now braking
+                reward -= 0.2  # discourage flip-flopping
+
+        self.last_action = action
+
+        # -- Off-road penalty
         if not on_road:
-            reward = self.reward_config.off_track_penalty
+            reward += OFF_TRACK_P
             done = True
+            
+        #reward = np.clip(reward, -100, 100)
 
         self.last_position = current_position.copy()
         return obs, reward, done, truncated, info
@@ -224,13 +266,13 @@ class carSim(gym.Wrapper):
         - Straight right (5°)
         """
         if frame is None or frame.size == 0:
-            return {175: 1, 120: 1, 90: 1, 60: 1, 5: 1}
+            return {170: 1, 150: 1, 130: 1, 110: 1, 90: 1, 70: 1, 50: 1, 30: 1, 10: 1}
 
         h, w, _ = frame.shape
         car_y, car_x = int(h * 0.75), int(w * 0.5)  # Approximate car position
         
         # Ordered from left to right
-        directions = [175, 120, 90, 60, 5]
+        directions = [170, 150, 130, 110, 90, 70, 50, 30, 10]
         distances = {}
 
         for angle in directions:
@@ -349,17 +391,21 @@ class carSim(gym.Wrapper):
         self.env.close()
 
 class DQL:
-    learning_rate = 0.001   # Learning rate for the neural network, alpha
-    gamma = 0.9             # Discount factor, gamma
-    epsilon = 0.1           # Epsilon greedy parameter
-    epsilon_decay = 0.999   # Epsilon decay rate: 0.995
+    learning_rate = 0.0003   # Learning rate for the neural network, alpha
+    gamma = 0.99            # Discount factor, gamma
+    epsilon = 1.0           # Start with full exploration
+    epsilon_decay = 0.995   # Decay a bit faster
     buffer_size = 50000     # Replay buffer size: 10000
-    batch_size = 64         # Number of samples to take from memory: 32
-    target_update = 20      # Update target network after agent takes n steps: 10
+    batch_size = 128         # Number of samples to take from memory: 32
+    target_update = 1000      # Update target network after agent takes n steps: 10
+    LIDAR_ANGLES = [170, 150, 130, 110, 90, 70, 50, 30, 10]
+    DIRECTION_VECTORS = [(math.cos(math.radians(a)), math.sin(math.radians(a))) for a in LIDAR_ANGLES]
 
+    
     # Actions taken every 3 frames by default with carracing-v3
-    actions = ['Left', 'Right', 'Straight', 'Accelerate', 'Coast', 'Brake']
+    #actions = ['Left', 'Right', 'Straight', 'Accelerate', 'Coast', 'Brake']
 
+    
     def __init__(self, state_dim, action_dim, env):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -367,6 +413,7 @@ class DQL:
         self.buffer = []
         self.steps = 0
         self.env = env
+        self.eps = 1e-6  # Small constant to ensure non-zero probabilities
 
         self.q_network = self.build_network()
         self.target_network = self.build_network()
@@ -375,17 +422,35 @@ class DQL:
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.target_network.eval()
 
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.learning_rate)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.learning_rate, weight_decay=0.01)  # Added L2 regularization - adapts learning rate to each parameter        self.loss_fn = nn.MSELoss()
         self.loss_fn = nn.MSELoss()
+        #STEER_HARD   =  1.0     # 100 % wheel angle – keep, but rarely used
+        STEER_SOFT   =  0.30    # 30 % wheel angle – fine for centring
+        GAS_FULL     =  1.0
+        GAS_COAST    =  0.5
+        BRAKE_MODERATE = 0.8
+
+        self.actions = [
+            [-STEER_SOFT,  GAS_FULL, 0.0],   # gentle left
+            [ STEER_SOFT,  GAS_FULL, 0.0],   # gentle right
+            [ 0.0,         GAS_FULL, 0.0],   # straight + gas (main straight‑line action)
+            [-STEER_SOFT,  GAS_COAST, 0.0],  # soft left, coasting
+            [ STEER_SOFT,  GAS_COAST, 0.0],  # soft right, coasting
+            [ 0.0,         GAS_COAST, 0.0],  # coast straight
+            [ 0.0,         0.0,       BRAKE_MODERATE],  # brake
+        ]
 
     def build_network(self):
         model = nn.Sequential(
-            nn.Linear(self.state_dim, 128),
+            nn.Linear(self.state_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, self.action_dim)
         )
+
         return model
 
     def select_action(self, state):
@@ -393,11 +458,23 @@ class DQL:
             return np.random.choice(self.action_dim)
         else:
             state = torch.FloatTensor(state).unsqueeze(0)
-            q_values = self.q_network(state)
+            with torch.no_grad():
+                q_values = self.q_network(state)
             return q_values.argmax().item()
 
     def store_experience(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+        next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
+        
+        with torch.no_grad():
+            current_q = self.q_network(state_tensor)[0][action]
+            next_q = self.target_network(next_state_tensor).max()
+            target_q = reward + (1 - done) * self.gamma * next_q
+            td_error = abs(target_q - current_q) + self.eps
+
+        # Store experience with priority - model will use better runs
+        self.memory.append((state, action, reward, next_state, done, td_error.item()))
+        
         if len(self.memory) > self.buffer_size:
             self.memory.pop(0)
 
@@ -405,8 +482,16 @@ class DQL:
         if len(self.memory) < self.batch_size:
             return
 
-        batch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        # Calculate sampling probabilities based on priorities
+        priorities = np.array([exp[5] for exp in self.memory])
+        probs = priorities / priorities.sum()
+
+        # Sample batch using priorities
+        batch_indices = np.random.choice(len(self.memory), self.batch_size, p=probs)
+        batch = [self.memory[idx] for idx in batch_indices]
+        
+        # Unpack batch (excluding priorities)
+        states, actions, rewards, next_states, dones, _ = zip(*batch)
 
         # Convert lists to numpy arrays - got a flag from tensor
         states = np.array(states, dtype=np.float32)
@@ -423,19 +508,28 @@ class DQL:
         dones = torch.from_numpy(dones)
 
         current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        max_next_q_values = self.target_network(next_states).max(1)[0]
+        next_actions = self.q_network(next_states).argmax(1)
+        max_next_q_values = self.target_network(next_states)\
+                        .gather(1, next_actions.unsqueeze(1)).squeeze(1)
         target_q_values = rewards + (1 - dones) * self.gamma * max_next_q_values
 
         loss = self.loss_fn(current_q_values, target_q_values.detach())
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 5)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        avg_q = current_q_values.mean().item()
+        print(f"Loss: {loss.item():.4f}, Avg Q: {avg_q:.2f}")
 
         # Periodically update target network
         if self.steps % self.target_update == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
     def train_agent(self, episodes, csv_path=None, checkpoints=[]):
+        MAX_SPEED = 100.0         # Based on typical top speed (adjust if needed)
+        MAX_WHEEL_ANGLE = 0.6     # Approximate max steering angle (rad)
+
         for episode in range(episodes):
             state, _ = self.env.reset(checkpoints=checkpoints.copy())
             total_reward = 0
@@ -445,22 +539,46 @@ class DQL:
 
             while not (done or truncated):
                 self.steps += 1
-                # Convert observation to state vector (LiDAR distances)
+
+                # === State Vector ===
                 lidar_readings = self.env.get_lidar_readings(state)
-                state_vector = np.array(list(lidar_readings.values()))
-                
+                car = self.env.unwrapped.car
+
+                normalized_distances = np.array(list(lidar_readings.values()), dtype=np.float32) / 100.0
+                direction_encoding = np.array(DQL.DIRECTION_VECTORS, dtype=np.float32).flatten()
+
+                speed = np.linalg.norm(car.hull.linearVelocity) / MAX_SPEED
+                angle = car.hull.angle / np.pi
+                steering = car.wheels[0].joint.angle / MAX_WHEEL_ANGLE
+                extra_features = [speed, angle, steering]
+
+                state_vector = np.concatenate([normalized_distances, direction_encoding, extra_features])
+
                 action = self.select_action(state_vector)
                 lidar_str = ", ".join(f"{int(x):3d}" for x in list(lidar_readings.values()))
-                print(f"\rLiDAR: [{lidar_str}] | {self.actions[action]:9s} \t | Step: {self.steps:5d}\t | ", end='', flush=True)
-                # [175, 120, 90, 60, 5]
-                
-                # Convert discrete action to continuous space
-                continuous_action = self._discrete_to_continuous(action)
+                action_str = f"[{', '.join(f'{x:.1f}' for x in self.actions[action])}]"
+                print(f"\rLiDAR: [{lidar_str}] | {action_str:>20} | Step: {self.steps:5d}\t | ", end='', flush=True)
+
+                # === Take Action ===
+                continuous_action = np.array(self.actions[action], dtype=np.float32)
                 next_obs, reward, done, truncated, _ = self.env.step(continuous_action)
-                next_state_vector = np.array(list(self.env.get_lidar_readings(next_obs).values()))
-                
+
+                # === Next State Vector ===
+                next_lidar = self.env.get_lidar_readings(next_obs)
+                car = self.env.unwrapped.car
+
+                normalized_next_distances = np.array(list(next_lidar.values()), dtype=np.float32) / 100.0
+                next_speed = np.linalg.norm(car.hull.linearVelocity) / MAX_SPEED
+                next_angle = car.hull.angle / np.pi
+                next_steering = car.wheels[0].joint.angle / MAX_WHEEL_ANGLE
+                next_extra_features = [next_speed, next_angle, next_steering]
+
+                next_state_vector = np.concatenate([normalized_next_distances, direction_encoding, next_extra_features])
+
+                # === Store Experience + Train ===
                 self.store_experience(state_vector, action, reward, next_state_vector, done or truncated)
                 self.train()
+
                 state = next_obs
                 total_reward += reward
 
@@ -468,7 +586,7 @@ class DQL:
             distance = self.env.episode_distance
             avg_speed = distance / elapsed_time if elapsed_time > 0 else 0
 
-            # Save data
+            # === Save Episode Data ===
             if csv_path:
                 with open(csv_path, 'a', newline='') as f:
                     writer = csv.writer(f)
@@ -479,9 +597,8 @@ class DQL:
             print(f"  Time: {elapsed_time:.2f} sec")
             print(f"  Avg Speed: {avg_speed:.2f} m/s")
             print(f"  Total Reward: {total_reward:.2f}")
-            # print("\r\033[K", end='')
-            # print(f"Episode {episode + 1:3d} | Total Reward: {total_reward:7.2f} | Epsilon: {self.epsilon:6.3f}")
-            self.epsilon = max(0.01, self.epsilon * self.epsilon_decay)  # Decay epsilon with minimum value
+
+            self.epsilon = max(0.01, self.epsilon * self.epsilon_decay)
 
     def _discrete_to_continuous(self, action):
         # Convert discrete actions to continuous actions for CarRacing environment
@@ -541,8 +658,8 @@ if __name__ == "__main__":
     observation, info = env.reset(checkpoints=checkpoints.copy())
 
     # Get input dimensions from LiDAR readings (5 distances)
-    state_dim = 5  # One value for each LiDAR beam
-    action_dim = len(DQL.actions)  # Number of discrete actions
+    state_dim = 30  # One value for each LiDAR beam
+    action_dim = 7  # Number of discrete actions
 
     # Initialize DQL agent
     agent = DQL(state_dim, action_dim, env)
@@ -606,7 +723,7 @@ if __name__ == "__main__":
     try:
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
-        for i in range(500):
+        for i in range(100):
             agent.train_agent(episodes=100, csv_path=csv_path, checkpoints=checkpoints.copy())  # Number of episodes to train
         
         # Get filename for saving model
