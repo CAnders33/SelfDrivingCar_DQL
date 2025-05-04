@@ -9,12 +9,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import csv
+from shapely.geometry import Point, Polygon
 
 class RewardConfig:
     def __init__(self):
         self.off_track_penalty = -110        # Penalty for going off track - overfits if too low. Can go fast and crash
         self.speed_reward_weight = 0.02      # Weight for speed reward
-        self.distance_reward_weight = 2    # Weight for distance covered
+        self.distance_reward_weight = 0.05    # Weight for distance covered
         self.living_cost = -0.03             # Penalty per step to discourage inaction
 
 class CustomRenderer:
@@ -110,7 +111,7 @@ class CustomRenderer:
             print(f"Error in render: {e}")
 
 class carSim(gym.Wrapper):
-    def __init__(self, seed=None, reward_config=None, renderer=None, render_mode="rgb_array"):
+    def __init__(self, seed=None, reward_config=None, renderer=None, render_mode="rgb_array", checkpoints=[]):
         print('render mode: ', render_mode)
         env = gym.make("CarRacing-v3", render_mode=render_mode)
         super().__init__(env)
@@ -122,6 +123,8 @@ class carSim(gym.Wrapper):
         self.last_position = None
         self.show_rays = self._render_mode == "human"  # Only show rays in human mode
         self.episode_distance = 0.0
+
+        self.check_points = checkpoints
         
         if seed is not None:
             self.seed_value = seed
@@ -129,14 +132,31 @@ class carSim(gym.Wrapper):
             self.observation_space.seed(seed)
             np.random.seed(seed)
 
-    def reset(self, **kwargs):
+
+
+
+    def reset(self, checkpoints=[], **kwargs):
+        print('In reset function. Checkpoints passed: ', checkpoints)
         if hasattr(self, 'seed_value'):
             kwargs['seed'] = self.seed_value
         obs, info = super().reset(**kwargs)
         self.last_position = self.unwrapped.car.hull.position.copy()
         self.current_obs = obs
         self.episode_distance = 0.0
+        self.check_points = checkpoints
         return obs, info
+    
+
+    def is_car_in_tile(self, car_position, tile):
+        for fixture in tile.fixtures:
+            shape = fixture.shape
+            # Check if the shape is a polygon (Box2D polygons have type e_polygon)
+            if shape.type == shape.e_polygon:
+                # Transform each vertex from local to world coordinates using the body's transform
+                poly_coords = [tuple(tile.transform * vertex) for vertex in shape.vertices]
+        polygon = Polygon(poly_coords)
+        return polygon.contains(Point(car_position))
+    
 
     def step(self, action):
         obs, base_reward, done, truncated, info = self.env.step(action)
@@ -162,6 +182,15 @@ class carSim(gym.Wrapper):
         speed = np.linalg.norm(car.hull.linearVelocity)  # Speed in m/s
         speed_reward = speed * self.reward_config.speed_reward_weight
 
+        # Checkpoint reward
+        checkpoint_reward = 0
+        if len(self.check_points) > 0:
+            next_tile_index = self.check_points[0]
+            tile = self.unwrapped.road[next_tile_index]
+            if self.is_car_in_tile(current_position, tile):
+                self.check_points.pop(0)
+                checkpoint_reward = 500
+
         # Distance covered reward
         if self.last_position is not None:
             curr_pos = np.array([current_position.x, current_position.y])
@@ -173,7 +202,7 @@ class carSim(gym.Wrapper):
             distance_reward = 0
         
         living_cost = self.reward_config.living_cost
-        reward = base_reward + speed_reward + distance_reward + living_cost
+        reward = base_reward + speed_reward + distance_reward + living_cost + checkpoint_reward
 
         if not on_road:
             reward = self.reward_config.off_track_penalty
@@ -198,7 +227,7 @@ class carSim(gym.Wrapper):
             return {175: 1, 120: 1, 90: 1, 60: 1, 5: 1}
 
         h, w, _ = frame.shape
-        car_y, car_x = int(h * 0.69), int(w * 0.5)  # Approximate car position
+        car_y, car_x = int(h * 0.75), int(w * 0.5)  # Approximate car position
         
         # Ordered from left to right
         directions = [175, 120, 90, 60, 5]
@@ -216,25 +245,25 @@ class carSim(gym.Wrapper):
             scale_x = 600/96
             scale_y = 400/96
 
-            x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.69)  # Car position
-            for angle, dist in distances.items():
-                angle_rad = np.radians(angle)
-                x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
-                cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
-                cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1) # Draw car position indicator
+            # x1, y1 = int(frame.shape[1] * 0.5), int(frame.shape[0] * 0.75)  # Car position
+            # for angle, dist in distances.items():
+            #     angle_rad = np.radians(angle)
+            #     x2, y2 = int(x1 + dist * scale_x * np.cos(angle_rad)), int(y1 - dist * scale_y * np.sin(angle_rad))
+            #     cv2.line(frame, (x1, y1), (int(x2), int(y2)), (255, 50, 50), 2)
+            #     cv2.circle(frame, (x1, y1), 3, (50, 50, 255), -1) # Draw car position indicator
 
-            # # Create debug visualization
-            # debug_frame = frame.copy()
-            # cv2.circle(debug_frame, (car_x, car_y), 2, (255, 0, 0), -1)  # Car position
-            # for angle in directions:
-            #     end_x = int(car_x + distances[angle] * np.cos(np.radians(angle)))
-            #     end_y = int(car_y - distances[angle] * np.sin(np.radians(angle)))
-            #     cv2.line(debug_frame, (car_x, car_y), (end_x, end_y), (255, 255, 0), 1)
-            #     cv2.circle(debug_frame, (end_x, end_y), 3, (0, 0, 255), -1)
-            # cv2.namedWindow("LIDAR Debug", cv2.WINDOW_NORMAL)
-            # cv2.resizeWindow("LIDAR Debug", w * 4, h * 4)  # Make window 4x larger
-            # cv2.imshow("LIDAR Debug", debug_frame)
-            # cv2.waitKey(1)
+            # Create debug visualization
+            debug_frame = frame.copy()
+            cv2.circle(debug_frame, (car_x, car_y), 2, (255, 0, 0), -1)  # Car position
+            for angle in directions:
+                end_x = int(car_x + distances[angle] * np.cos(np.radians(angle)))
+                end_y = int(car_y - distances[angle] * np.sin(np.radians(angle)))
+                cv2.line(debug_frame, (car_x, car_y), (end_x, end_y), (255, 255, 0), 1)
+                cv2.circle(debug_frame, (end_x, end_y), 3, (0, 0, 255), -1)
+            cv2.namedWindow("LIDAR Debug", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("LIDAR Debug", w * 4, h * 4)  # Make window 4x larger
+            cv2.imshow("LIDAR Debug", debug_frame)
+            cv2.waitKey(1)
             
         return distances
 
@@ -323,10 +352,10 @@ class DQL:
     learning_rate = 0.001   # Learning rate for the neural network, alpha
     gamma = 0.9             # Discount factor, gamma
     epsilon = 0.1           # Epsilon greedy parameter
-    epsilon_decay = 0.995   # Epsilon decay rate
-    buffer_size = 10000     # Replay buffer size
-    batch_size = 32         # Number of samples to take from memory
-    target_update = 10      # Update target network after agent takes n steps
+    epsilon_decay = 0.999   # Epsilon decay rate: 0.995
+    buffer_size = 50000     # Replay buffer size: 10000
+    batch_size = 64         # Number of samples to take from memory: 32
+    target_update = 20      # Update target network after agent takes n steps: 10
 
     # Actions taken every 3 frames by default with carracing-v3
     actions = ['Left', 'Right', 'Straight', 'Accelerate', 'Coast', 'Brake']
@@ -406,9 +435,9 @@ class DQL:
         if self.steps % self.target_update == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
-    def train_agent(self, episodes, csv_path=None):
+    def train_agent(self, episodes, csv_path=None, checkpoints=[]):
         for episode in range(episodes):
-            state, _ = self.env.reset()
+            state, _ = self.env.reset(checkpoints=checkpoints.copy())
             total_reward = 0
             done = False
             truncated = False
@@ -495,7 +524,9 @@ if __name__ == "__main__":
     # change rewards in class above
     reward_config = RewardConfig()
 
-    SEED = np.random.randint(100) # 37843
+    # SEED = np.random.randint(100) # 37843
+    SEED = 617
+    checkpoints = [24, 54, 68, 100, 112, 118, 130, 145, 160, 180, 215, 243, 265]
     
     # Ask user for render mode
     print("\nAvailable render modes:")
@@ -506,8 +537,8 @@ if __name__ == "__main__":
     render_mode = "human" if render_choice == "2" else "rgb_array"
     
     # Create environment with selected render mode
-    env = carSim(seed=SEED, reward_config=reward_config, render_mode=render_mode)
-    observation, info = env.reset()
+    env = carSim(seed=SEED, reward_config=reward_config, render_mode=render_mode, checkpoints=checkpoints.copy())
+    observation, info = env.reset(checkpoints=checkpoints.copy())
 
     # Get input dimensions from LiDAR readings (5 distances)
     state_dim = 5  # One value for each LiDAR beam
@@ -576,7 +607,7 @@ if __name__ == "__main__":
         # Training loop
         print("Starting training... Press Ctrl+C to stop")
         for i in range(500):
-            agent.train_agent(episodes=100, csv_path=csv_path)  # Number of episodes to train
+            agent.train_agent(episodes=100, csv_path=csv_path, checkpoints=checkpoints.copy())  # Number of episodes to train
         
         # Get filename for saving model
         save_name = input("\nEnter filename to save model (without .pth, or press Enter for 'car_dql_model'): ")

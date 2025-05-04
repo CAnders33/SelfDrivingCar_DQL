@@ -5,10 +5,11 @@ import pygame
 import time
 import csv
 import os
+from shapely.geometry import Point, Polygon
 
 
 class ManualCarSim(gym.Wrapper):
-    def __init__(self, seed=None, show_lidar=True):
+    def __init__(self, seed=None, show_lidar=True, checkpoints = []):
         # env = gym.make("CarRacing-v3", render_mode="human")
         env = gym.make("CarRacing-v3", render_mode="rgb_array")
         super().__init__(env)
@@ -17,6 +18,9 @@ class ManualCarSim(gym.Wrapper):
         self.last_position = None
         self.episode_distance = 0.0
 
+        self.check_points = checkpoints
+
+
         
         if seed is not None:
             self.seed_value = seed
@@ -24,28 +28,67 @@ class ManualCarSim(gym.Wrapper):
             self.observation_space.seed(seed)
             np.random.seed(seed)
 
-    def reset(self, **kwargs):
+    def reset(self, checkpoints=[], **kwargs):
         if hasattr(self, 'seed_value'):
             kwargs['seed'] = self.seed_value
         obs, info = self.env.reset(**kwargs)
         self.current_obs = obs
         self.last_position = self.unwrapped.car.hull.position.copy()
         self.episode_distance = 0.0
+        self.check_points = checkpoints
 
         return obs, info
+    
+
+    def is_car_in_tile(self, car_position, tile):
+        for fixture in tile.fixtures:
+            shape = fixture.shape
+            # Check if the shape is a polygon (Box2D polygons have type e_polygon)
+            if shape.type == shape.e_polygon:
+                # Transform each vertex from local to world coordinates using the body's transform
+                poly_coords = [tuple(tile.transform * vertex) for vertex in shape.vertices]
+        polygon = Polygon(poly_coords)
+        return polygon.contains(Point(car_position))
+    
+
+    def print_current_tile_index(self):
+        """
+        Returns the index of the road tile in which the car's center is located.
+        If not found, returns None.
+        """
+        car_position = self.unwrapped.car.hull.position  # World coordinates (b2Vec2)
+        # Make sure you're iterating over the correct list of tile bodies.
+        # This example assumes self.env.unwrapped.road is the list containing your tile bodies.
+        for idx, tile in enumerate(self.env.unwrapped.road):
+            if self.is_car_in_tile(car_position, tile):
+                print('Index tile', idx)
+
 
     def step(self, action):
         obs, reward, done, truncated, info = self.env.step(action)
         self.current_obs = obs
+
         # Distance tracking
         car = self.unwrapped.car
         current_position = car.hull.position
+
         if self.last_position is not None:
             curr_pos = np.array([current_position.x, current_position.y])
             last_pos = np.array([self.last_position.x, self.last_position.y])
             distance = np.linalg.norm(curr_pos - last_pos)
             self.episode_distance += distance
         self.last_position = current_position.copy()
+
+        # print current tile
+        self.print_current_tile_index()
+
+        if len(self.check_points) > 0:
+            next_tile_index = self.check_points[0]
+            tile = self.unwrapped.road[next_tile_index]
+            if self.is_car_in_tile(current_position, tile):
+                self.check_points.pop(0)
+                print('in checkpoint!')
+
 
         return obs, reward, done, truncated, info
 
@@ -134,6 +177,7 @@ class ManualCarSim(gym.Wrapper):
         """ Toggle the LiDAR visualization on/off """
         self.show_lidar = not self.show_lidar
         return self.show_lidar
+    
 
     def close(self):
         self.env.close()
@@ -169,8 +213,9 @@ if __name__ == "__main__":
     pygame.display.set_mode((100, 100))
     
     SEED = 617 # 37843
-    env = ManualCarSim(seed=SEED, show_lidar=True)  # Start with LiDAR visualization enabled
-    observation, info = env.reset()
+    checkpoints = [7, 25, 30]
+    env = ManualCarSim(seed=SEED, show_lidar=True, checkpoints=checkpoints.copy())  # Start with LiDAR visualization enabled
+    observation, info = env.reset(checkpoints=checkpoints.copy())
     
     episode_total_reward = 0.0
     episode_start_time = time.time()
@@ -222,7 +267,7 @@ if __name__ == "__main__":
         cv2.imshow("CarRacing with LiDARRR", frame)
         # cv2.putText(frame, "Custom LiDAR Frame", (10, 20),
         #     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        cv2.waitKey(1) 
+        # cv2.waitKey(1) 
 
         
         # Get lidar readings and road status every 3 frames
@@ -250,10 +295,10 @@ if __name__ == "__main__":
             #     lidar_readings[90], lidar_readings[45], lidar_readings[0], lidar_readings[-45], lidar_readings[-90],
             #     "On Road" if on_road else "Off Road" 
             # ), end='')
-            print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
-                lidar_readings[175], lidar_readings[120], lidar_readings[90], lidar_readings[60], lidar_readings[5],
-                "On Road" if on_road else "Off Road" 
-            ), end='')
+            # print("\rLiDAR Distances: Left 90°: {:<3} | Left 45°: {:<3} | Forward: {:<3} | Right 45°: {:<3} | Right 90°: {:<3} | {}".format(
+            #     lidar_readings[175], lidar_readings[120], lidar_readings[90], lidar_readings[60], lidar_readings[5],
+            #     "On Road" if on_road else "Off Road" 
+            # ), end='')
             # directions = [175, 120, 90, 60, 5]
 
             if not on_road:
@@ -281,7 +326,7 @@ if __name__ == "__main__":
             episode_total_reward = 0.0
             episode_start_time = time.time()
 
-            observation, info = env.reset()
+            observation, info = env.reset(checkpoints=checkpoints.copy())
             print("\nTrack reset!")
             
         clock.tick(60)  # Limit to 60 FPS
